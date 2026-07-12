@@ -1,0 +1,167 @@
+import { Injectable } from '@nestjs/common';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const PDFDocument = require('pdfkit') as typeof import('pdfkit');
+
+@Injectable()
+export class ResultsService {
+  async generatePDF(
+    submission: any,
+    studentName: string,
+    regNumber: string,
+  ): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const doc = new PDFDocument({ margin: 50 });
+      const chunks: Buffer[] = [];
+      doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+
+      const result = submission.gradeResult;
+
+      // Header
+      doc
+        .fontSize(20)
+        .font('Helvetica-Bold')
+        .text('COLLEGE CODING ASSESSMENT', { align: 'center' })
+        .fontSize(14)
+        .font('Helvetica')
+        .text('Result Report', { align: 'center' })
+        .moveDown(0.3);
+
+      // Student name prominently displayed
+      doc
+        .fontSize(16)
+        .font('Helvetica-Bold')
+        .fillColor('#4f46e5')
+        .text(studentName, { align: 'center' })
+        .fontSize(12)
+        .font('Helvetica')
+        .fillColor('#6b7280')
+        .text(regNumber, { align: 'center' })
+        .fillColor('#000000')
+        .moveDown(0.5);
+
+      doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke().moveDown(0.5);
+
+      // Student details
+      doc
+        .fontSize(11)
+        .font('Helvetica-Bold')
+        .text('STUDENT DETAILS', { underline: true })
+        .moveDown(0.3);
+      doc.font('Helvetica').fontSize(10);
+      [
+        ['Name', studentName],
+        ['Reg Number', regNumber],
+        ['Language', submission.language?.toUpperCase()],
+        ['Difficulty', submission.difficulty?.toUpperCase()],
+        [
+          'Submitted At',
+          new Date(submission.createdAt).toLocaleString('en-IN'),
+        ],
+      ].forEach(([label, value]) => {
+        doc
+          .text(`${label}: `, { continued: true })
+          .font('Helvetica-Bold')
+          .text(value);
+        doc.font('Helvetica');
+      });
+
+      doc.moveDown(0.8);
+
+      // Score
+      doc
+        .fontSize(11)
+        .font('Helvetica-Bold')
+        .text('RESULT SUMMARY', { underline: true })
+        .moveDown(0.3);
+      const scoreColor = result.passed ? '#16a34a' : '#dc2626';
+      doc
+        .fontSize(28)
+        .fillColor(scoreColor)
+        .font('Helvetica-Bold')
+        .text(`${result.score}/100`, { align: 'center' });
+      doc
+        .fontSize(14)
+        .fillColor(scoreColor)
+        .text(result.passed ? '✓ PASSED' : '✗ NOT PASSED', { align: 'center' });
+      doc
+        .fillColor('#000000')
+        .fontSize(11)
+        .font('Helvetica')
+        .text(
+          `Test Cases: ${result.testsPassed} / ${result.testsTotal} passed`,
+          { align: 'center' },
+        );
+
+      doc.moveDown(0.8);
+
+      // Test cases
+      doc
+        .fontSize(11)
+        .font('Helvetica-Bold')
+        .text('TEST CASE RESULTS', { underline: true })
+        .moveDown(0.3);
+      result.testDetails?.forEach((tc: any) => {
+        const color = tc.passed ? '#16a34a' : '#dc2626';
+        doc
+          .fillColor(color)
+          .font('Helvetica-Bold')
+          .fontSize(10)
+          .text(
+            `${tc.passed ? '✓' : '✗'} Test Case ${tc.index}: ${tc.passed ? 'PASSED' : 'FAILED'}`,
+          );
+        if (!tc.passed) {
+          doc
+            .fillColor('#6b7280')
+            .font('Helvetica')
+            .fontSize(9)
+            .text(`  Expected: ${tc.expectedOutput}`)
+            .text(`  Got:      ${tc.actualOutput}`);
+        }
+        doc.fillColor('#000000').moveDown(0.2);
+      });
+
+      doc.moveDown(0.5);
+
+      // AI feedback
+      doc
+        .fontSize(11)
+        .font('Helvetica-Bold')
+        .text('AI CODE REVIEW', { underline: true })
+        .moveDown(0.3);
+      if (result.aiFeedback) {
+        doc.font('Helvetica').fontSize(10);
+        doc.text(`Code Quality:    ${result.aiFeedback.codeQuality}`);
+        doc
+          .text(`Time Complexity: ${result.aiFeedback.timeComplexity}`)
+          .moveDown(0.3);
+        doc.font('Helvetica-Bold').text('Overall Feedback:');
+        doc
+          .font('Helvetica')
+          .text(result.aiFeedback.overallComment, { width: 445 })
+          .moveDown(0.3);
+        if (result.aiFeedback.suggestions?.length > 0) {
+          doc.font('Helvetica-Bold').text('Suggestions:');
+          doc.font('Helvetica');
+          result.aiFeedback.suggestions.forEach((s: string) =>
+            doc.text(`• ${s}`, { width: 445 }),
+          );
+        }
+      }
+
+      doc.moveDown(0.8);
+      doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke().moveDown(0.3);
+      doc
+        .fontSize(9)
+        .fillColor('#6b7280')
+        .font('Helvetica')
+        .text(
+          `Generated by CodeGoAI Platform  •  ${new Date().toLocaleString('en-IN')}`,
+          { align: 'center' },
+        );
+
+      doc.end();
+    });
+  }
+}

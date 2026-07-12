@@ -1,0 +1,15 @@
+{
+  "name": "codego-selenium-tests",
+  "version": "1.0.0",
+  "description": "Selenium WebDriver E2E test suite for the CodeGo Platform",
+  "private": true,
+  "scripts": {
+    "test": "mocha 'tests/**/*.test.js' --timeout 30000 --reporter spec",
+    "test:login": "mocha tests/login.test.js --timeout 30000 --reporter spec",
+    "test:dashboard": "mocha tests/dashboard.test.js --timeout 30000 --reporter spec",
+    "test:navigation": "mocha tests/navigation.test.js --timeout 30000 --reporter spec",
+    "test:faculty": "mocha tests/faculty.test.js --timeout 30000 --reporter spec",
+    "test:e2e": "mocha tests/e2e-flow.test.js --timeout 60000 --reporter spec",
+    "test:ci": "HEADLESS=true mocha 'tests/**/*.test.js' --timeout 30000 --reporter spec --exit"
+  }
+}

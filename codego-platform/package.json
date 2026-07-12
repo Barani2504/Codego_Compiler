@@ -1,0 +1,92 @@
+{
+  "name": "codego-platform",
+  "homepage": "https://YOUR_USERNAME.github.io/YOUR_REPO",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "predeploy": "npm run build:web",
+    "deploy": "gh-pages -d dist",
+    "dev:web": "vite",
+    "dev:electron": "cross-env ELECTRON=true vite",
+    "build:web": "tsc -b && vite build",
+    "build:electron": "tsc -b && cross-env ELECTRON=true vite build && electron-builder",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "test": "mocha 'selenium-tests/tests/**/*.test.js' --timeout 30000 --reporter spec --exit",
+    "test:login": "mocha selenium-tests/tests/login.test.js --timeout 30000 --reporter spec",
+    "test:dashboard": "mocha selenium-tests/tests/dashboard.test.js --timeout 30000 --reporter spec",
+    "test:navigation": "mocha selenium-tests/tests/navigation.test.js --timeout 30000 --reporter spec",
+    "test:faculty": "mocha selenium-tests/tests/faculty.test.js --timeout 30000 --reporter spec",
+    "test:e2e": "mocha selenium-tests/tests/e2e-flow.test.js --timeout 60000 --reporter spec",
+    "test:ci": "cross-env HEADLESS=true mocha 'selenium-tests/tests/**/*.test.js' --timeout 30000 --reporter spec --exit"
+  },
+  "build": {
+    "appId": "com.codego.platform",
+    "productName": "CodeGo",
+    "directories": {
+      "output": "dist-electron-apps"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ]
+    }
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.1",
+    "@tsparticles/engine": "^3.9.1",
+    "@tsparticles/react": "^3.0.0",
+    "@tsparticles/slim": "^3.9.1",
+    "@types/canvas-confetti": "^1.9.0",
+    "@types/three": "^0.184.0",
+    "axios": "^1.15.2",
+    "canvas-confetti": "^1.9.4",
+    "framer-motion": "^12.38.0",
+    "lucide-react": "^1.12.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "react-markdown": "^10.1.0",
+    "react-parallax-tilt": "^1.7.324",
+    "react-router-dom": "^7.14.2",
+    "recharts": "^3.8.1",
+    "remark-gfm": "^4.0.1",
+    "three": "^0.184.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.12.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "chai": "^6.2.2",
+    "cross-env": "^10.1.0",
+    "electron": "^41.3.0",
+    "electron-builder": "^26.8.1",
+    "eslint": "^10.2.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.5.0",
+    "mocha": "^11.7.6",
+    "selenium-webdriver": "^4.44.0",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.58.2",
+    "vite": "^8.0.10",
+    "vite-plugin-electron": "^0.29.1",
+    "vite-plugin-electron-renderer": "^0.14.6"
+  }
+}

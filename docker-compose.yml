@@ -1,0 +1,305 @@
+# ── Shared resource anchors ──────────────────────────────────────────────────
+x-api-resources: &api-resources
+  deploy:
+    resources:
+      limits: { cpus: "1.0", memory: 512M }
+      reservations: { cpus: "0.25", memory: 128M }
+
+x-worker-resources: &worker-resources
+  deploy:
+    resources:
+      limits: { cpus: "1.0", memory: 768M }
+      reservations: { cpus: "0.25", memory: 128M }
+
+# ── Shared API environment (overridden per service for PORT) ─────────────────
+x-api-env: &api-env
+  env_file: ./backend/.env
+  environment:
+    # libuv thread pool — NestJS is async I/O so the default (4) is usually
+    # enough; 16 covers any sync crypto / fs work without wasting OS threads.
+    UV_THREADPOOL_SIZE: 16
+    DB_HOST: pgbouncer # Hit PgBouncer, not Postgres directly
+    DB_PORT: 6432
+    # ── App-level cache (questions, status) → allkeys-lru Redis ────────────
+    REDIS_HOST: redis
+    # ── Bull job queue → dedicated noeviction Redis ─────────────────────────
+    # Keeping Bull on a separate Redis instance ensures queued jobs are NEVER
+    # silently evicted under memory pressure (allkeys-lru would do that).
+    BULL_REDIS_HOST: redis-queue
+    BULL_REDIS_PORT: 6379
+    JUDGE0_URL: http://judge0-server:2358
+    OLLAMA_URL: http://host.docker.internal:11434
+    OLLAMA_GRADING_MODEL: qwen2.5-coder:1.5b # Lightweight model for fast grading (2-5s)
+    CHROMA_URL: http://chroma:8000
+
+# ── Health check used by all API instances ───────────────────────────────────
+x-api-healthcheck: &api-healthcheck
+  healthcheck:
+    test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+    interval: 15s
+    timeout: 5s
+    retries: 3
+    start_period: 30s
+
+services:
+  # ── NGINX — load balancer + SPA host ────────────────────────────────────────
+  # try_files in default.conf fixes "site not found" on SPA hard-refresh.
+  # least_conn + max_fails removes dead API instances automatically.
+  nginx:
+    image: nginx:alpine
+    ports: ["80:80"]
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./codego-platform/dist:/usr/share/nginx/html:ro # built React app
+    depends_on:
+      api1: { condition: service_healthy }
+      api2: { condition: service_healthy }
+      api3: { condition: service_healthy }
+      api4: { condition: service_healthy }
+    restart: always
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 128M }
+
+  # ── API Instances (4×) ──────────────────────────────────────────────────────
+  api1: &api
+    image: codego-backend:latest
+    build: ./backend
+    <<: [*api-env, *api-healthcheck, *api-resources]
+    depends_on:
+      pgbouncer:   { condition: service_started }
+      redis:       { condition: service_started }
+      redis-queue: { condition: service_started }
+    restart: always
+
+  api2:
+    image: codego-backend:latest
+    <<: [*api-env, *api-healthcheck, *api-resources]
+    depends_on:
+      pgbouncer:   { condition: service_started }
+      redis:       { condition: service_started }
+      redis-queue: { condition: service_started }
+    restart: always
+
+  api3:
+    image: codego-backend:latest
+    <<: [*api-env, *api-healthcheck, *api-resources]
+    depends_on:
+      pgbouncer:   { condition: service_started }
+      redis:       { condition: service_started }
+      redis-queue: { condition: service_started }
+    restart: always
+
+  api4:
+    image: codego-backend:latest
+    <<: [*api-env, *api-healthcheck, *api-resources]
+    depends_on:
+      pgbouncer:   { condition: service_started }
+      redis:       { condition: service_started }
+      redis-queue: { condition: service_started }
+    restart: always
+
+  # ── Bull Workers (4×, concurrency 5 each = 20 concurrent executions) ────────
+  # Workers pull from the 'execution' Bull queue in redis-queue (noeviction).
+  # They never handle HTTP — they only process code execution jobs.
+  worker1: &worker
+    image: codego-backend:latest
+    command: node dist/execution/worker.js
+    <<: [*api-env, *worker-resources]
+    depends_on:
+      redis-queue: { condition: service_started }
+      pgbouncer:   { condition: service_started }
+    restart: always
+
+  worker2:
+    <<: *worker
+
+  worker3:
+    <<: *worker
+
+  worker4:
+    <<: *worker
+
+  # ── PgBouncer — PostgreSQL connection pooler ─────────────────────────────────
+  # POOL_MODE=transaction: each query borrows a connection then releases it —
+  # ideal for API workloads with many short queries.
+  # MAX_CLIENT_CONN=500: accepts up to 500 connections from NestJS instances.
+  # DEFAULT_POOL_SIZE=25: forwards max 25 real connections to Postgres.
+  pgbouncer:
+    image: pgbouncer/pgbouncer:latest
+    environment:
+      DATABASES_HOST: postgres
+      DATABASES_PORT: 5432
+      DATABASES_DBNAME: coding_platform
+      DATABASES_USER: platform_user
+      DATABASES_PASSWORD: ${DB_PASS}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 500
+      DEFAULT_POOL_SIZE: 25
+      SERVER_IDLE_TIMEOUT: 10
+      CLIENT_IDLE_TIMEOUT: 30
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits, statement_timeout
+    ports:
+      - "6432:6432"
+    depends_on:
+      - postgres
+    restart: always
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 64M }
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  # max_connections raised to 50 — PgBouncer sits in front so Postgres never
+  # sees more than DEFAULT_POOL_SIZE=25 real connections.
+  postgres:
+    image: postgres:15-alpine
+    command: >
+      postgres
+      -c max_connections=50
+      -c shared_buffers=256MB
+      -c effective_cache_size=512MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=64MB
+      -c wal_buffers=8MB
+    environment:
+      POSTGRES_USER: platform_user
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: coding_platform
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 768M }
+        reservations: { cpus: "0.25", memory: 256M }
+
+  # ── Redis (app-level cache) ───────────────────────────────────────────────────
+  # Used ONLY for app-level caching (question data, submission status TTLs).
+  # allkeys-lru is fine here — evicting a stale cache entry is harmless.
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: always
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 300M }
+
+  # ── Redis Queue (Bull job queue) ──────────────────────────────────────────────
+  # Dedicated Redis instance for Bull queues ONLY.
+  # noeviction: Redis rejects new writes instead of silently dropping jobs.
+  # This guarantees queued code-execution jobs are never lost under memory pressure.
+  redis-queue:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --maxmemory 128mb
+      --maxmemory-policy noeviction
+      --save 60 1
+    volumes:
+      - redis_queue_data:/data
+    restart: always
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 160M }
+
+  # ── Judge0 CE — self-hosted code execution engine ───────────────────────────
+  # judge0-server  : Rails API  (POST /submissions?wait=true)
+  # judge0-worker  : Resque worker that actually runs code in an isolate sandbox
+  # judge0-db      : Postgres used internally by Judge0 (separate from app DB)
+  # judge0-redis   : Redis used internally by Judge0 job queue
+  #
+  # judge0.conf controls limits (CPU, memory, workers) and is mounted read-only.
+  # ENABLE_WAIT_RESULT=true lets us use ?wait=true — synchronous, no polling.
+
+  judge0-server:
+    image: judge0/judge0:1.13.1
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    ports:
+      - "2358:2358"
+    privileged: true
+    restart: always
+    command: ["./scripts/server"]
+    depends_on:
+      - judge0-db
+      - judge0-redis
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 512M }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:2358/system_info || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  judge0-worker:
+    image: judge0/judge0:1.13.1
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    privileged: true
+    restart: always
+    command: ["./scripts/workers"]
+    depends_on:
+      - judge0-db
+      - judge0-redis
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 1G }
+
+  judge0-db:
+    image: postgres:13-alpine
+    environment:
+      POSTGRES_DB: judge0
+      POSTGRES_USER: judge0
+      POSTGRES_PASSWORD: judge0_password
+    volumes:
+      - judge0_db_data:/var/lib/postgresql/data
+    restart: always
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 256M }
+
+  judge0-redis:
+    image: redis:6-alpine
+    restart: always
+    volumes:
+      - judge0_redis_data:/data
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 128M }
+
+  # ── ChromaDB ─────────────────────────────────────────────────────────────────
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    restart: always
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512M }
+
+volumes:
+  postgres_data:
+  redis_data:
+  redis_queue_data:
+  judge0_db_data:    # Judge0 internal Postgres data
+  judge0_redis_data: # Judge0 internal Redis data
+  chroma_data:
