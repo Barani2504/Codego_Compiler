@@ -20,10 +20,13 @@ export const REDIS_CLIENT = 'REDIS_CLIENT';
         // Sending a placeholder/empty string to a no-auth Redis causes
         // "NOAUTH Authentication required" which ioredis retries in a tight loop.
         const redisPassword = process.env.REDIS_PASSWORD || '';
+        const redisTLS = process.env.REDIS_TLS === 'true';
         const client = new Redis({
           host: process.env.REDIS_HOST || 'localhost',
           port: parseInt(process.env.REDIS_PORT || '6379', 10),
           ...(redisPassword ? { password: redisPassword } : {}),
+          // Upstash requires TLS — enabled via REDIS_TLS=true in production
+          ...(redisTLS ? { tls: {} } : {}),
           maxRetriesPerRequest: 3,
           enableReadyCheck: false,
           lazyConnect: true, // Don't block startup if Redis is briefly unavailable

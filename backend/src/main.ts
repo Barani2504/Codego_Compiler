@@ -33,8 +33,12 @@ async function bootstrap() {
   );
 
   // ── CORS ──────────────────────────────────────────────────────────────────
+  // FRONTEND_URL can be a comma-separated list for multiple origins:
+  // e.g. "http://localhost:5173,https://codego-platform.netlify.app"
+  const rawOrigins = process.env.FRONTEND_URL || 'http://localhost:5173';
+  const allowedOrigins = rawOrigins.split(',').map((o) => o.trim());
   app.enableCors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+    origin: allowedOrigins.length === 1 ? allowedOrigins[0] : allowedOrigins,
     credentials: true,
   });
 

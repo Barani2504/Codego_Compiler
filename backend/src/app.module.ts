@@ -45,6 +45,8 @@ import { AppService } from './app.service';
         port: parseInt(process.env.REDIS_PORT || '6379', 10),
         // Only set password if the env var is actually provided and non-empty
         ...(process.env.REDIS_PASSWORD ? { password: process.env.REDIS_PASSWORD } : {}),
+        // Upstash requires TLS — enabled via REDIS_TLS=true in production
+        ...(process.env.REDIS_TLS === 'true' ? { tls: {} } : {}),
       }),
     }),
 
@@ -66,6 +68,8 @@ import { AppService } from './app.service';
       // dev, but DANGEROUS in production (it can drop columns without warning).
       synchronize: process.env.NODE_ENV !== 'production',
       logging: process.env.NODE_ENV === 'development',
+      // ── Neon requires SSL in production ────────────────────────────────────
+      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
       // ── Connection Pool Config (per instance) ──────────────────────────────
       poolSize: 5,                       // PgBouncer handles the rest
       connectTimeoutMS: 5000,
@@ -85,6 +89,8 @@ import { AppService } from './app.service';
         port: parseInt(process.env.BULL_REDIS_PORT || process.env.REDIS_PORT || '6379'),
         // Only send AUTH when REDIS_PASSWORD is actually set — empty string causes NOAUTH
         ...(process.env.REDIS_PASSWORD ? { password: process.env.REDIS_PASSWORD } : {}),
+        // Upstash requires TLS — enabled via REDIS_TLS=true in production
+        ...(process.env.REDIS_TLS === 'true' ? { tls: {} } : {}),
         maxRetriesPerRequest: 3,
         enableReadyCheck: false,
       },
