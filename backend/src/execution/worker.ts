@@ -10,27 +10,65 @@ import { User } from '../users/user.entity';
 import { Question } from '../questions/question.entity';
 import { Submission } from '../submissions/submission.entity';
 
+import { getRedisConfig } from '../common/redis/redis-config.util';
+
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     TypeOrmModule.forRoot({
       type: 'postgres',
-      host: process.env.DB_HOST || 'localhost',
-      port: parseInt(process.env.DB_PORT || '5432'),
-      username: process.env.DB_USER || 'platform_user',
-      password: process.env.DB_PASS || 'yourpassword',
-      database: process.env.DB_NAME || 'coding_platform',
+      ...(process.env.DATABASE_URL
+        ? {
+            url: process.env.DATABASE_URL,
+            ssl: { rejectUnauthorized: false },
+          }
+        : {
+            host: process.env.DB_HOST || 'localhost',
+            port: parseInt(process.env.DB_PORT || '5432', 10),
+            username: process.env.DB_USER || 'platform_user',
+            password: process.env.DB_PASS || 'yourpassword',
+            database: process.env.DB_NAME || 'coding_platform',
+            ssl:
+              process.env.NODE_ENV === 'production' || process.env.DB_SSL === 'true'
+                ? { rejectUnauthorized: false }
+                : false,
+          }),
       entities: [User, Question, Submission],
-      synchronize: process.env.NODE_ENV !== 'production',
+      synchronize: process.env.NODE_ENV !== 'production' || process.env.DB_SYNC === 'true',
       poolSize: 5,
+      extra: {
+        idleTimeoutMillis: 10000,
+        connectionTimeoutMillis: 10000,
+        ...(process.env.DATABASE_URL ||
+        process.env.NODE_ENV === 'production' ||
+        process.env.DB_SSL === 'true'
+          ? { ssl: { rejectUnauthorized: false } }
+          : {}),
+      },
     }),
-    BullModule.forRoot({
-      redis: {
-        host: process.env.BULL_REDIS_HOST || process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.BULL_REDIS_PORT || '6379'),
-        password: process.env.REDIS_PASSWORD || undefined,
-        maxRetriesPerRequest: 3,
-        enableReadyCheck: false,
+    BullModule.forRootAsync({
+      useFactory: () => {
+        const { url, options } = getRedisConfig();
+        if (url) {
+          return {
+            url,
+            redis: {
+              ...options,
+              maxRetriesPerRequest: null,
+            },
+          };
+        }
+        return {
+          redis: {
+            ...options,
+            host: process.env.BULL_REDIS_HOST || options.host || 'localhost',
+            port: parseInt(
+              process.env.BULL_REDIS_PORT || (options.port ? String(options.port) : '6379'),
+              10,
+            ),
+            maxRetriesPerRequest: null,
+          },
+        };
       },
     }),
     // Register the run-code queue so workers also process run-code jobs

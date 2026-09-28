@@ -1,6 +1,7 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger, Inject } from '@nestjs/common';
 import { Subject, Observable } from 'rxjs';
 import Redis from 'ioredis';
+import { createRedisClient } from '../common/redis/redis-config.util';
 
 /**
  * SubmissionEventsService — Cross-node fan-out for SSE delivery.
@@ -24,14 +25,7 @@ export class SubmissionEventsService implements OnModuleInit, OnModuleDestroy {
   private subscriber: Redis;
 
   onModuleInit() {
-    // Dedicated Redis connection for Pub/Sub — separate from the cache client.
-    // Only pass `password` when REDIS_PASSWORD is actually set; sending an
-    // empty/undefined password string to a Redis with no auth causes NOAUTH loops.
-    const redisPassword = process.env.REDIS_PASSWORD || '';
-    this.subscriber = new Redis({
-      host: process.env.REDIS_HOST || 'localhost',
-      port: parseInt(process.env.REDIS_PORT || '6379', 10),
-      ...(redisPassword ? { password: redisPassword } : {}),
+    this.subscriber = createRedisClient({
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
       lazyConnect: false,

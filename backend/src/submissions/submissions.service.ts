@@ -12,6 +12,7 @@ import { UsersService } from '../users/users.service';
 import { GradingService } from '../grading/grading.service';
 import { ExecutionService } from '../execution/execution.service';
 import { REDIS_CLIENT } from '../common/redis/redis.module';
+import { createRedisClient } from '../common/redis/redis-config.util';
 
 /** How long (seconds) to cache a submission status response in Redis.
  *  Frontend polls every 2s — a 2s TTL means at most one extra DB query per cycle. */
@@ -41,11 +42,7 @@ export class SubmissionsService implements OnModuleInit, OnModuleDestroy {
    * This connection stays in subscriber mode and cannot run other commands.
    */
   onModuleInit() {
-    const redisPassword = process.env.REDIS_PASSWORD || '';
-    this.runCodeSubscriber = new Redis({
-      host: process.env.REDIS_HOST || 'localhost',
-      port: parseInt(process.env.REDIS_PORT || '6379', 10),
-      ...(redisPassword ? { password: redisPassword } : {}),
+    this.runCodeSubscriber = createRedisClient({
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
       lazyConnect: false,

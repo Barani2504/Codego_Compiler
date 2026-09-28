@@ -17,6 +17,7 @@ import { ResultsModule } from './results/results.module';
 import { ProgressModule } from './progress/progress.module';
 import { FacultyModule } from './faculty/faculty.module';
 import { RedisModule } from './common/redis/redis.module';
+import { getRedisConfig, createRedisClient } from './common/redis/redis-config.util';
 import { TelemetryModule } from './telemetry/telemetry.module';
 import { User } from './users/user.entity';
 import { Question } from './questions/question.entity';
@@ -38,75 +39,99 @@ import { AppService } from './app.service';
     // Storage: Redis-backed so rate limits are enforced consistently across all
     // clustered API nodes. Without this, a user could exceed limits by being
     // load-balanced to different nodes (each with its own in-memory counter).
-    ThrottlerModule.forRoot({
-      throttlers: [{ ttl: 60000, limit: 120 }],
-      storage: new ThrottlerStorageRedisService({
-        host: process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.REDIS_PORT || '6379', 10),
-        // Only set password if the env var is actually provided and non-empty
-        ...(process.env.REDIS_PASSWORD ? { password: process.env.REDIS_PASSWORD } : {}),
-        // Upstash requires TLS — enabled via REDIS_TLS=true in production
-        ...(process.env.REDIS_TLS === 'true' ? { tls: {} } : {}),
-      }),
+    ThrottlerModule.forRootAsync({
+      useFactory: () => {
+        const client = createRedisClient({
+          maxRetriesPerRequest: 3,
+          enableReadyCheck: false,
+          lazyConnect: true,
+        });
+        return {
+          throttlers: [{ ttl: 60000, limit: 120 }],
+          storage: new ThrottlerStorageRedisService(client),
+        };
+      },
     }),
 
-    // ── Database via PgBouncer ───────────────────────────────────────────────
-    // In Docker: DB_HOST=pgbouncer, DB_PORT=6432.
-    // poolSize: 5 per instance × 4 instances = 20 TypeORM connections.
-    // PgBouncer (DEFAULT_POOL_SIZE=25) multiplexes these into 25 real
-    // Postgres connections — well within Postgres max_connections=100.
+    // ── Database (Neon / PgBouncer / Local Postgres) ─────────────────────────
     TypeOrmModule.forRoot({
       type: 'postgres',
-      host: process.env.DB_HOST || 'localhost',
-      port: parseInt(process.env.DB_PORT || '5432'),
-      username: process.env.DB_USER || 'platform_user',
-      password: process.env.DB_PASS || 'yourpassword',
-      database: process.env.DB_NAME || 'coding_platform',
+      ...(process.env.DATABASE_URL
+        ? {
+            url: process.env.DATABASE_URL,
+            ssl: { rejectUnauthorized: false },
+          }
+        : {
+            host: process.env.DB_HOST || 'localhost',
+            port: parseInt(process.env.DB_PORT || '5432', 10),
+            username: process.env.DB_USER || 'platform_user',
+            password: process.env.DB_PASS || 'yourpassword',
+            database: process.env.DB_NAME || 'coding_platform',
+            ssl:
+              process.env.NODE_ENV === 'production' || process.env.DB_SSL === 'true'
+                ? { rejectUnauthorized: false }
+                : false,
+          }),
       entities: [User, Question, Submission, KeystrokeWindow, CodeDelta],
-      // ⚠️  PRODUCTION: set NODE_ENV=production and use TypeORM migrations.
-      // synchronize: true auto-alters the DB schema on every restart — safe in
-      // dev, but DANGEROUS in production (it can drop columns without warning).
-      synchronize: process.env.NODE_ENV !== 'production',
+      synchronize: process.env.NODE_ENV !== 'production' || process.env.DB_SYNC === 'true',
       logging: process.env.NODE_ENV === 'development',
-      // ── Neon requires SSL in production ────────────────────────────────────
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-      // ── Connection Pool Config (per instance) ──────────────────────────────
-      poolSize: 5,                       // PgBouncer handles the rest
-      connectTimeoutMS: 5000,
+      poolSize: 5,
+      connectTimeoutMS: 10000,
       extra: {
-        idleTimeoutMillis: 10000,        // faster idle release through bouncer
-        connectionTimeoutMillis: 5000,
+        idleTimeoutMillis: 10000,
+        connectionTimeoutMillis: 10000,
+        ...(process.env.DATABASE_URL ||
+        process.env.NODE_ENV === 'production' ||
+        process.env.DB_SSL === 'true'
+          ? { ssl: { rejectUnauthorized: false } }
+          : {}),
       },
     }),
 
-    // ── Bull Queue with dedicated Redis (noeviction) ───────────────────────
-    // Bull connects to redis-queue (a separate Redis instance with noeviction
-    // policy) so queued jobs are NEVER silently dropped under memory pressure.
-    // The app-cache Redis (REDIS_HOST) uses allkeys-lru for the status cache.
-    BullModule.forRoot({
-      redis: {
-        host: process.env.BULL_REDIS_HOST || process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.BULL_REDIS_PORT || process.env.REDIS_PORT || '6379'),
-        // Only send AUTH when REDIS_PASSWORD is actually set — empty string causes NOAUTH
-        ...(process.env.REDIS_PASSWORD ? { password: process.env.REDIS_PASSWORD } : {}),
-        // Upstash requires TLS — enabled via REDIS_TLS=true in production
-        ...(process.env.REDIS_TLS === 'true' ? { tls: {} } : {}),
-        maxRetriesPerRequest: 3,
-        enableReadyCheck: false,
-      },
-      defaultJobOptions: {
-        attempts: 3,                    // retry a failed job 3 times
-        backoff: { type: 'exponential', delay: 2000 },
-        removeOnComplete: 100,          // keep last 100 completed jobs in Redis
-        removeOnFail: 200,              // keep last 200 failed jobs for debugging
-      },
-      // ── Backpressure limiter ──────────────────────────────────────────────
-      // Prevents a submission stampede (10,000 students auto-submitting at
-      // exam close) from saturating Judge0 and Ollama simultaneously.
-      // Instead of timeouts, submissions degrade to "slower results".
-      limiter: {
-        max: 100,       // max 100 jobs processed per second across all workers
-        duration: 1000, // per 1000ms window
+    // ── Bull Queue with dedicated Redis (Upstash / Local Redis) ────────────
+    BullModule.forRootAsync({
+      useFactory: () => {
+        const { url, options } = getRedisConfig();
+        if (url) {
+          return {
+            url,
+            redis: {
+              ...options,
+              maxRetriesPerRequest: null,
+            },
+            defaultJobOptions: {
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 2000 },
+              removeOnComplete: 100,
+              removeOnFail: 200,
+            },
+            limiter: {
+              max: 100,
+              duration: 1000,
+            },
+          };
+        }
+        return {
+          redis: {
+            ...options,
+            host: process.env.BULL_REDIS_HOST || options.host || 'localhost',
+            port: parseInt(
+              process.env.BULL_REDIS_PORT || (options.port ? String(options.port) : '6379'),
+              10,
+            ),
+            maxRetriesPerRequest: null,
+          },
+          defaultJobOptions: {
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 2000 },
+            removeOnComplete: 100,
+            removeOnFail: 200,
+          },
+          limiter: {
+            max: 100,
+            duration: 1000,
+          },
+        };
       },
     }),
 

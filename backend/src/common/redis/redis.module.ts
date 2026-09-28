@@ -1,5 +1,6 @@
 import { Module, Global } from '@nestjs/common';
 import Redis from 'ioredis';
+import { createRedisClient } from './redis-config.util';
 
 /**
  * Injection token for the shared ioredis client.
@@ -16,20 +17,10 @@ export const REDIS_CLIENT = 'REDIS_CLIENT';
     {
       provide: REDIS_CLIENT,
       useFactory: (): Redis => {
-        // Only send AUTH when REDIS_PASSWORD is actually configured.
-        // Sending a placeholder/empty string to a no-auth Redis causes
-        // "NOAUTH Authentication required" which ioredis retries in a tight loop.
-        const redisPassword = process.env.REDIS_PASSWORD || '';
-        const redisTLS = process.env.REDIS_TLS === 'true';
-        const client = new Redis({
-          host: process.env.REDIS_HOST || 'localhost',
-          port: parseInt(process.env.REDIS_PORT || '6379', 10),
-          ...(redisPassword ? { password: redisPassword } : {}),
-          // Upstash requires TLS — enabled via REDIS_TLS=true in production
-          ...(redisTLS ? { tls: {} } : {}),
+        const client = createRedisClient({
           maxRetriesPerRequest: 3,
           enableReadyCheck: false,
-          lazyConnect: true, // Don't block startup if Redis is briefly unavailable
+          lazyConnect: true,
         });
         client.on('error', (err) =>
           console.error('[RedisClient] Connection error:', err.message),
