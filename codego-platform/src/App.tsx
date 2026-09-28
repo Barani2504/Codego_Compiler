@@ -4,7 +4,6 @@ import { lazy, Suspense } from 'react';
 import ParticlesBackground from './components/ParticlesBackground';
 import WireframeGrid from './components/WireframeGrid';
 import Navbar from './components/Navbar';
-import CustomCursor from './components/CustomCursor';
 import './index.css';
 
 const Login = lazy(() => import('./pages/Login'));
@@ -15,6 +14,37 @@ const Results = lazy(() => import('./pages/Results'));
 const Profile = lazy(() => import('./pages/Profile'));
 const ChangePassword = lazy(() => import('./pages/ChangePassword'));
 const FacultyDashboard = lazy(() => import('./pages/FacultyDashboard'));
+const NotFound = lazy(() => import('./pages/NotFound'));
+const ThankYou = lazy(() => import('./pages/ThankYou'));
+const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));
+const TermsOfService = lazy(() => import('./pages/TermsOfService'));
+import CookieBanner from './components/CookieBanner';
+
+/**
+ * Parse the JWT payload WITHOUT verifying the signature.
+ * This is intentionally client-side only — it provides the UI with the role
+ * information embedded by the server at sign time. The server always re-validates
+ * the full JWT on every API call, so this cannot escalate privileges.
+ */
+function parseJwtPayload(token: string): Record<string, any> | null {
+  try {
+    const [, payloadB64] = token.split('.');
+    const json = atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/'));
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function getTokenRole(): string | null {
+  const token = localStorage.getItem('token');
+  if (!token) return null;
+  // Demo tokens bypass JWT parsing
+  if (token.startsWith('demo-faculty')) return 'faculty';
+  if (token.startsWith('demo-')) return 'student';
+  const payload = parseJwtPayload(token);
+  return payload?.role ?? null;
+}
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem('token');
@@ -29,9 +59,9 @@ function GuestRoute({ children }: { children: React.ReactNode }) {
 function FacultyRoute({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem('token');
   if (!token) return <Navigate to="/login" replace />;
-  let user: any = {};
-  try { user = JSON.parse(localStorage.getItem('user') || '{}'); } catch { user = {}; }
-  if (user.role !== 'faculty' && user.role !== 'admin' && !token.startsWith('demo-faculty')) {
+  // Role is derived from the JWT payload — not from mutable localStorage.user
+  const role = getTokenRole();
+  if (role !== 'faculty' && role !== 'admin') {
     return <Navigate to="/dashboard" replace />;
   }
   return <>{children}</>;
@@ -59,7 +89,7 @@ export default function App() {
         {/* Global ambient effects - render behind everything */}
         <WireframeGrid />
         <ParticlesBackground />
-        <CustomCursor />
+        <CookieBanner />
 
         <Suspense fallback={<Loader />}>
           <Routes>
@@ -71,7 +101,11 @@ export default function App() {
             <Route path="/profile" element={<PrivateRoute><AppLayout><Profile /></AppLayout></PrivateRoute>} />
             <Route path="/change-password" element={<PrivateRoute><AppLayout><ChangePassword /></AppLayout></PrivateRoute>} />
             <Route path="/faculty" element={<FacultyRoute><AppLayout><FacultyDashboard /></AppLayout></FacultyRoute>} />
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route path="/thank-you" element={<ThankYou />} />
+            <Route path="/privacy" element={<PrivacyPolicy />} />
+            <Route path="/terms" element={<TermsOfService />} />
+            <Route path="/404" element={<NotFound />} />
+            <Route path="*" element={<NotFound />} />
           </Routes>
         </Suspense>
       </HashRouter>

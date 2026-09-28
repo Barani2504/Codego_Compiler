@@ -4,8 +4,14 @@ import { motion, AnimatePresence } from 'framer-motion';
 import Tilt from 'react-parallax-tilt';
 import axios from 'axios';
 import ThemeToggle from '../components/ThemeToggle';
+import { usePageMeta } from '../hooks/usePageMeta';
 
 export default function ChangePassword() {
+  usePageMeta({
+    title: 'Account Security | CodeGo',
+    description: 'Update your institutional account credentials and password security settings.',
+  });
+
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirm, setConfirm] = useState('');

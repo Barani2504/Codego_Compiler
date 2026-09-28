@@ -269,7 +269,10 @@ export class ExecutionService {
           stdin:            this.b64(finalInput),
           cpu_time_limit:   10,       // seconds
           wall_time_limit:  15,       // wall-clock seconds (includes process spawn)
-          memory_limit:     262144,   // KB → 256 MB
+          memory_limit:     1048576,
+          compiler_options: language === 'java' ? '-J-XX:+UseSerialGC -J-XX:CompressedClassSpaceSize=64m -J-XX:MaxMetaspaceSize=128m -J-Xmx256m -J-Xms64m' : undefined,
+          enable_per_process_and_thread_time_limit:   true,
+          enable_per_process_and_thread_memory_limit: true,
         },
         {
           headers: { 'Content-Type': 'application/json' },

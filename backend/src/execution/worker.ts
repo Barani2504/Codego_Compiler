@@ -33,6 +33,8 @@ import { Submission } from '../submissions/submission.entity';
         enableReadyCheck: false,
       },
     }),
+    // Register the run-code queue so workers also process run-code jobs
+    BullModule.registerQueue({ name: 'run-code' }),
     RedisModule,
     ExecutionModule,
   ],

@@ -49,6 +49,7 @@ services:
     image: nginx:alpine
     ports: ["80:80"]
     volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./codego-platform/dist:/usr/share/nginx/html:ro # built React app
     depends_on:
@@ -59,12 +60,17 @@ services:
     restart: always
     deploy:
       resources:
-        limits: { cpus: "0.5", memory: 128M }
+        limits: { cpus: "1.0", memory: 512M }
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
 
   # ── API Instances (4×) ──────────────────────────────────────────────────────
   api1: &api
     image: codego-backend:latest
     build: ./backend
+    pull_policy: build
     <<: [*api-env, *api-healthcheck, *api-resources]
     depends_on:
       pgbouncer:   { condition: service_started }
@@ -73,37 +79,22 @@ services:
     restart: always
 
   api2:
-    image: codego-backend:latest
-    <<: [*api-env, *api-healthcheck, *api-resources]
-    depends_on:
-      pgbouncer:   { condition: service_started }
-      redis:       { condition: service_started }
-      redis-queue: { condition: service_started }
-    restart: always
+    <<: *api
 
   api3:
-    image: codego-backend:latest
-    <<: [*api-env, *api-healthcheck, *api-resources]
-    depends_on:
-      pgbouncer:   { condition: service_started }
-      redis:       { condition: service_started }
-      redis-queue: { condition: service_started }
-    restart: always
+    <<: *api
 
   api4:
-    image: codego-backend:latest
-    <<: [*api-env, *api-healthcheck, *api-resources]
-    depends_on:
-      pgbouncer:   { condition: service_started }
-      redis:       { condition: service_started }
-      redis-queue: { condition: service_started }
-    restart: always
+    <<: *api
 
-  # ── Bull Workers (4×, concurrency 5 each = 20 concurrent executions) ────────
-  # Workers pull from the 'execution' Bull queue in redis-queue (noeviction).
-  # They never handle HTTP — they only process code execution jobs.
+  # ── Bull Workers (6×, concurrency 5 each = 30 concurrent executions) ────────
+  # Workers pull from the 'execution' and 'run-code' Bull queues in redis-queue
+  # (noeviction). They never handle HTTP — they only process code execution jobs.
+  # Judge0 backend: 3 worker containers × 8 internal workers = 24 sandboxed execs.
   worker1: &worker
     image: codego-backend:latest
+    build: ./backend
+    pull_policy: build
     command: node dist/execution/worker.js
     <<: [*api-env, *worker-resources]
     depends_on:
@@ -120,13 +111,20 @@ services:
   worker4:
     <<: *worker
 
+  worker5:
+    <<: *worker
+
+  worker6:
+    <<: *worker
+
   # ── PgBouncer — PostgreSQL connection pooler ─────────────────────────────────
   # POOL_MODE=transaction: each query borrows a connection then releases it —
   # ideal for API workloads with many short queries.
-  # MAX_CLIENT_CONN=500: accepts up to 500 connections from NestJS instances.
-  # DEFAULT_POOL_SIZE=25: forwards max 25 real connections to Postgres.
+  # MAX_CLIENT_CONN=1000: accepts up to 1000 concurrent client connections from clustered NestJS instances.
+  # DEFAULT_POOL_SIZE=30: forwards max 30 real connections to Postgres.
   pgbouncer:
     image: pgbouncer/pgbouncer:latest
+    env_file: ./backend/.env
     environment:
       DATABASES_HOST: postgres
       DATABASES_PORT: 5432
@@ -134,8 +132,8 @@ services:
       DATABASES_USER: platform_user
       DATABASES_PASSWORD: ${DB_PASS}
       POOL_MODE: transaction
-      MAX_CLIENT_CONN: 500
-      DEFAULT_POOL_SIZE: 25
+      MAX_CLIENT_CONN: 2000
+      DEFAULT_POOL_SIZE: 30
       SERVER_IDLE_TIMEOUT: 10
       CLIENT_IDLE_TIMEOUT: 30
       IGNORE_STARTUP_PARAMETERS: extra_float_digits, statement_timeout
@@ -149,13 +147,14 @@ services:
         limits: { cpus: "0.25", memory: 64M }
 
   # ── PostgreSQL ───────────────────────────────────────────────────────────────
-  # max_connections raised to 50 — PgBouncer sits in front so Postgres never
-  # sees more than DEFAULT_POOL_SIZE=25 real connections.
+  # max_connections raised to 100 — PgBouncer sits in front so Postgres never
+  # sees more than DEFAULT_POOL_SIZE=30 real connections.
   postgres:
-    image: postgres:15-alpine
+    image: postgres:16-alpine
+    env_file: ./backend/.env
     command: >
       postgres
-      -c max_connections=50
+      -c max_connections=100
       -c shared_buffers=256MB
       -c effective_cache_size=512MB
       -c work_mem=4MB
@@ -165,6 +164,8 @@ services:
       POSTGRES_USER: platform_user
       POSTGRES_PASSWORD: ${DB_PASS}
       POSTGRES_DB: coding_platform
+    ports:
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: always
@@ -178,6 +179,7 @@ services:
   # allkeys-lru is fine here — evicting a stale cache entry is harmless.
   redis:
     image: redis:7-alpine
+    env_file: ./backend/.env
     command: >
       redis-server
       --requirepass ${REDIS_PASSWORD}
@@ -200,6 +202,7 @@ services:
   # This guarantees queued code-execution jobs are never lost under memory pressure.
   redis-queue:
     image: redis:7-alpine
+    env_file: ./backend/.env
     command: >
       redis-server
       --requirepass ${REDIS_PASSWORD}
@@ -227,6 +230,16 @@ services:
     image: judge0/judge0:1.13.1
     volumes:
       - ./judge0.conf:/judge0.conf:ro
+    environment:
+      - POSTGRES_HOST=judge0-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=judge0
+      - POSTGRES_USER=judge0
+      - POSTGRES_PASSWORD=judge0_password
+      - REDIS_HOST=judge0-redis
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://judge0-redis:6379
+      - MAX_MEMORY_LIMIT=2048000
     ports:
       - "2358:2358"
     privileged: true
@@ -237,7 +250,7 @@ services:
       - judge0-redis
     deploy:
       resources:
-        limits: { cpus: "1.0", memory: 512M }
+        limits: { cpus: "1.0", memory: 2G }
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:2358/system_info || exit 1"]
       interval: 15s
@@ -249,6 +262,16 @@ services:
     image: judge0/judge0:1.13.1
     volumes:
       - ./judge0.conf:/judge0.conf:ro
+    environment:
+      - POSTGRES_HOST=judge0-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=judge0
+      - POSTGRES_USER=judge0
+      - POSTGRES_PASSWORD=judge0_password
+      - REDIS_HOST=judge0-redis
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://judge0-redis:6379
+      - MAX_MEMORY_LIMIT=2048000
     privileged: true
     restart: always
     command: ["./scripts/workers"]
@@ -257,7 +280,55 @@ services:
       - judge0-redis
     deploy:
       resources:
-        limits: { cpus: "2.0", memory: 1G }
+        limits: { cpus: "4.0", memory: 8G }
+
+  judge0-worker2:
+    image: judge0/judge0:1.13.1
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    environment:
+      - POSTGRES_HOST=judge0-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=judge0
+      - POSTGRES_USER=judge0
+      - POSTGRES_PASSWORD=judge0_password
+      - REDIS_HOST=judge0-redis
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://judge0-redis:6379
+      - MAX_MEMORY_LIMIT=2048000
+    privileged: true
+    restart: always
+    command: ["./scripts/workers"]
+    depends_on:
+      - judge0-db
+      - judge0-redis
+    deploy:
+      resources:
+        limits: { cpus: "4.0", memory: 8G }
+
+  judge0-worker3:
+    image: judge0/judge0:1.13.1
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    environment:
+      - POSTGRES_HOST=judge0-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=judge0
+      - POSTGRES_USER=judge0
+      - POSTGRES_PASSWORD=judge0_password
+      - REDIS_HOST=judge0-redis
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://judge0-redis:6379
+      - MAX_MEMORY_LIMIT=2048000
+    privileged: true
+    restart: always
+    command: ["./scripts/workers"]
+    depends_on:
+      - judge0-db
+      - judge0-redis
+    deploy:
+      resources:
+        limits: { cpus: "4.0", memory: 8G }
 
   judge0-db:
     image: postgres:13-alpine

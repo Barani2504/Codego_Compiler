@@ -9,22 +9,63 @@ export class UsersService {
   constructor(@InjectRepository(User) private usersRepo: Repository<User>) {}
 
   async bulkImport(students: any[], defaultPassword: string) {
+    if (!students || students.length === 0) {
+      return { imported: 0, skipped: 0, errors: [] };
+    }
+
     // Cost 10 ≈ 70ms — 4× faster than cost 12, still OWASP-recommended minimum
     const hashed = await bcrypt.hash(defaultPassword, 10);
-    let imported = 0, skipped = 0;
     const errors: string[] = [];
 
-    for (const s of students) {
-      try {
-        const exists = await this.usersRepo.findOne({ where: { regNumber: s.regNumber } });
-        if (exists) { skipped++; continue; }
-        await this.usersRepo.save(this.usersRepo.create({
-          regNumber: s.regNumber, name: s.name, department: s.department,
-          year: s.year, password: hashed, mustChangePassword: true, role: 'student' as any,
+    // Find already existing registration numbers in a single query
+    const regNumbers = students.map((s) => s.regNumber).filter(Boolean);
+    const existingUsers =
+      regNumbers.length > 0
+        ? await this.usersRepo
+            .createQueryBuilder('u')
+            .select('u.regNumber')
+            .where('u.regNumber IN (:...regNumbers)', { regNumbers })
+            .getMany()
+        : [];
+
+    const existingSet = new Set(existingUsers.map((u) => u.regNumber));
+    const toInsert = students.filter((s) => {
+      if (!s.regNumber) return false;
+      return !existingSet.has(s.regNumber);
+    });
+
+    const skipped = students.length - toInsert.length;
+    let imported = 0;
+
+    if (toInsert.length > 0) {
+      // Chunk inserts in batches of 100 to stay well under query parameter limits
+      const CHUNK_SIZE = 100;
+      for (let i = 0; i < toInsert.length; i += CHUNK_SIZE) {
+        const chunk = toInsert.slice(i, i + CHUNK_SIZE).map((s) => ({
+          regNumber: s.regNumber,
+          name: s.name,
+          department: s.department,
+          year: s.year,
+          password: hashed,
+          mustChangePassword: true,
+          role: 'student' as any,
         }));
-        imported++;
-      } catch (err: any) { errors.push(`${s.regNumber}: ${err.message}`); }
+
+        try {
+          await this.usersRepo
+            .createQueryBuilder()
+            .insert()
+            .into(User)
+            .values(chunk)
+            .orIgnore()
+            .execute();
+          imported += chunk.length;
+        } catch (err: any) {
+          errors.push(`Chunk ${Math.floor(i / CHUNK_SIZE) + 1}: ${err.message}`);
+        }
+      }
     }
+
     return { imported, skipped, errors };
   }
 
@@ -41,45 +82,41 @@ export class UsersService {
   }
 
   async updateProgressStats(userId: string, passed: boolean, score: number) {
-    const user = await this.findById(userId);
-    if (!user) return;
+    await this.usersRepo.manager.transaction(async (manager) => {
+      const user = await manager.getRepository(User).findOne({
+        where: { id: userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!user) return;
 
-    const today = new Date().toISOString().split('T')[0];
-    const lastDate = user.lastSubmissionDate
-      ? new Date(user.lastSubmissionDate).toISOString().split('T')[0]
-      : null;
+      const today = new Date().toISOString().split('T')[0];
+      const lastDate = user.lastSubmissionDate
+        ? new Date(user.lastSubmissionDate).toISOString().split('T')[0]
+        : null;
 
-    // ── Streak logic (requires a read, so keep as-is) ─────────────────────────
-    let newStreak = user.currentStreak;
-    if (lastDate !== today) {
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      newStreak =
-        lastDate === yesterday.toISOString().split('T')[0]
-          ? user.currentStreak + 1
-          : 1;
-    }
+      let newStreak = user.currentStreak;
+      if (lastDate !== today) {
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        newStreak =
+          lastDate === yesterday.toISOString().split('T')[0]
+            ? user.currentStreak + 1
+            : 1;
+      }
 
-    // ── Atomic increments: prevents lost-update race when two submissions
-    //    for the same student complete simultaneously. ─────────────────────────
-    await this.usersRepo.increment({ id: userId }, 'totalAssessments', 1);
-    if (passed) {
-      await this.usersRepo.increment({ id: userId }, 'totalPassed', 1);
-    }
+      const totalAssessments = (user.totalAssessments || 0) + 1;
+      const totalPassed = (user.totalPassed || 0) + (passed ? 1 : 0);
+      const newAvgScore =
+        (((user.averageScore || 0) * (totalAssessments - 1)) + score) / totalAssessments;
 
-    // ── Re-read the freshly-incremented totals to compute the new average ─────
-    const updated = await this.findById(userId);
-    if (!updated) return;
-
-    const newAvgScore =
-      ((updated.averageScore * (updated.totalAssessments - 1)) + score) /
-      updated.totalAssessments;
-
-    await this.usersRepo.update(userId, {
-      averageScore:       Math.round(newAvgScore * 100) / 100,
-      currentStreak:      newStreak,
-      longestStreak:      Math.max(updated.longestStreak, newStreak),
-      lastSubmissionDate: new Date(),
+      await manager.getRepository(User).update(userId, {
+        totalAssessments,
+        totalPassed,
+        averageScore: Math.round(newAvgScore * 100) / 100,
+        currentStreak: newStreak,
+        longestStreak: Math.max(user.longestStreak || 0, newStreak),
+        lastSubmissionDate: new Date(),
+      });
     });
   }
 }

@@ -6,9 +6,11 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor() {
     super({
+      // Support Bearer header as primary; allow ?token= query parameter for
+      // SSE EventSource connections which cannot send custom HTTP headers in browsers.
       jwtFromRequest: ExtractJwt.fromExtractors([
         ExtractJwt.fromAuthHeaderAsBearerToken(),
-        (req) => req.query?.token as string,
+        ExtractJwt.fromUrlQueryParameter('token'),
       ]),
       ignoreExpiration: false,
       secretOrKey: process.env.JWT_SECRET || 'changeme-secret',

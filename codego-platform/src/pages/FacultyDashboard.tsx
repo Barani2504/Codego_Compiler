@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import Tilt from "react-parallax-tilt";
 import axios from "axios";
@@ -12,6 +13,7 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from "recharts";
+import CodePlayback from "../components/CodePlayback";
 import {
   GraduationCap,
   Download,
@@ -20,7 +22,13 @@ import {
   Check,
   X,
   FileText,
+  Video,
+  ShieldCheck,
+  ShieldAlert,
+  Clock,
+  ArrowLeft,
 } from "lucide-react";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 const DIFF_LABELS: Record<string, string> = {
   easy: "Foundational",
@@ -33,7 +41,30 @@ const DIFF_COLORS: Record<string, string> = {
   hard: "var(--red)",
 };
 
+function formatDuration(seconds?: number, fallback?: string): string | null {
+  if (fallback) return fallback;
+  if (!seconds || seconds <= 0) return null;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+function parseTimeToSec(timeStr?: string): number | undefined {
+  if (!timeStr) return undefined;
+  const mMatch = timeStr.match(/(\d+)\s*m/i);
+  const sMatch = timeStr.match(/(\d+)\s*s/i);
+  const minutes = mMatch ? parseInt(mMatch[1], 10) : 0;
+  const seconds = sMatch ? parseInt(sMatch[1], 10) : 0;
+  const total = minutes * 60 + seconds;
+  return total > 0 ? total : undefined;
+}
+
 export default function FacultyDashboard() {
+  usePageMeta({
+    title: 'Faculty Intelligence & Monitoring | CodeGo',
+    description: 'Faculty dashboard for real-time exam monitoring, student score distributions, and institutional assessment export.',
+  });
+
   const [stats, setStats] = useState<any>(null);
   const [results, setResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,6 +79,29 @@ export default function FacultyDashboard() {
   const [modalSearch, setModalSearch] = useState("");
   const [modalPassFilter, setModalPassFilter] = useState("all");
   const [modalSort, setModalSort] = useState("high_marks");
+  const [actionFeedback, setActionFeedback] = useState<{ type: "info" | "error" | "success"; message: string } | null>(null);
+  const [playbackSubmission, setPlaybackSubmission] = useState<any | null>(null);
+
+  const showFeedback = (type: "info" | "error" | "success", message: string) => {
+    setActionFeedback({ type, message });
+    setTimeout(() => setActionFeedback(null), 5000);
+  };
+
+  // Lock body scroll and listen for Escape to close Replay Strokes cleanly
+  useEffect(() => {
+    if (playbackSubmission) {
+      const prevOverflow = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === "Escape") setPlaybackSubmission(null);
+      };
+      window.addEventListener("keydown", handleKeyDown);
+      return () => {
+        document.body.style.overflow = prevOverflow;
+        window.removeEventListener("keydown", handleKeyDown);
+      };
+    }
+  }, [playbackSubmission]);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -106,6 +160,9 @@ export default function FacultyDashboard() {
               difficulty: "hard",
               score: 88,
               passed: true,
+              timeTaken: "24m 15s",
+              timeTakenSeconds: 1455,
+              originalityScore: 94,
               submittedAt: new Date().toISOString(),
             },
             {
@@ -117,6 +174,9 @@ export default function FacultyDashboard() {
               difficulty: "medium",
               score: 95,
               passed: true,
+              timeTaken: "16m 40s",
+              timeTakenSeconds: 1000,
+              originalityScore: 98,
               submittedAt: new Date(Date.now() - 3600000).toISOString(),
             },
             {
@@ -128,6 +188,9 @@ export default function FacultyDashboard() {
               difficulty: "hard",
               score: 45,
               passed: false,
+              timeTaken: "38m 10s",
+              timeTakenSeconds: 2290,
+              originalityScore: 62,
               submittedAt: new Date(Date.now() - 7200000).toISOString(),
             },
             {
@@ -139,6 +202,9 @@ export default function FacultyDashboard() {
               difficulty: "easy",
               score: 100,
               passed: true,
+              timeTaken: "8m 25s",
+              timeTakenSeconds: 505,
+              originalityScore: 100,
               submittedAt: new Date(Date.now() - 10000000).toISOString(),
             },
             {
@@ -150,6 +216,9 @@ export default function FacultyDashboard() {
               difficulty: "medium",
               score: 75,
               passed: true,
+              timeTaken: "19m 50s",
+              timeTakenSeconds: 1190,
+              originalityScore: 88,
               submittedAt: new Date(Date.now() - 86400000).toISOString(),
             },
             {
@@ -161,6 +230,9 @@ export default function FacultyDashboard() {
               difficulty: "easy",
               score: 30,
               passed: false,
+              timeTaken: "11m 15s",
+              timeTakenSeconds: 675,
+              originalityScore: 45,
               submittedAt: new Date(Date.now() - 90000000).toISOString(),
             },
           ]);
@@ -194,11 +266,11 @@ export default function FacultyDashboard() {
     e.stopPropagation();
     const token = localStorage.getItem("token");
     if (token?.startsWith("demo-")) {
-      alert("PDF download is simulated in demo mode.");
+      showFeedback("info", "PDF download is simulated in demo mode.");
       return;
     }
     if (!submissionId) {
-      alert("Submission ID not found.");
+      showFeedback("error", "Submission ID not found.");
       return;
     }
 
@@ -223,14 +295,14 @@ export default function FacultyDashboard() {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       console.error("Error downloading PDF:", err);
-      alert("Failed to download PDF. Please try again later.");
+      showFeedback("error", "Failed to download PDF. Please try again later.");
     }
   };
 
   const handleExport = async () => {
     const token = localStorage.getItem("token");
     if (token?.startsWith("demo-")) {
-      alert("CSV export simulated in demo mode.");
+      showFeedback("info", "CSV export simulated in demo mode.");
       return;
     }
 
@@ -251,7 +323,7 @@ export default function FacultyDashboard() {
       window.URL.revokeObjectURL(url);
     } catch (error) {
       console.error("Error downloading CSV:", error);
-      alert("Failed to download CSV report.");
+      showFeedback("error", "Failed to download CSV report.");
     }
   };
 
@@ -481,6 +553,40 @@ export default function FacultyDashboard() {
           <Download size={16} /> Export CSV Report
         </motion.button>
       </motion.div>
+
+      {/* Action feedback notification (replaces alert()) */}
+      <AnimatePresence>
+        {actionFeedback && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            className={`alert ${actionFeedback.type === "error" ? "alert-error" : "alert-info"}`}
+            style={{
+              marginBottom: "1.25rem",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <span>{actionFeedback.message}</span>
+            <button
+              onClick={() => setActionFeedback(null)}
+              style={{
+                background: "none",
+                border: "none",
+                color: "inherit",
+                cursor: "pointer",
+                padding: "0.2rem",
+                opacity: 0.8,
+              }}
+              aria-label="Dismiss message"
+            >
+              <X size={16} />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Difficulty stat cards */}
       <motion.div
@@ -813,8 +919,9 @@ export default function FacultyDashboard() {
                     fill="var(--green)"
                     radius={[4, 4, 0, 0]}
                     name="Passed"
-                    onClick={(data) => {
-                      setSelectedBox(data.difficulty);
+                    onClick={(data: any) => {
+                      const diff = data?.difficulty || data?.payload?.difficulty;
+                      if (diff) setSelectedBox(diff);
                       setModalSearch("");
                       setModalPassFilter("pass");
                       setModalSort("high_marks");
@@ -825,8 +932,9 @@ export default function FacultyDashboard() {
                     fill="var(--red)"
                     radius={[4, 4, 0, 0]}
                     name="Failed"
-                    onClick={(data) => {
-                      setSelectedBox(data.difficulty);
+                    onClick={(data: any) => {
+                      const diff = data?.difficulty || data?.payload?.difficulty;
+                      if (diff) setSelectedBox(diff);
                       setModalSearch("");
                       setModalPassFilter("fail");
                       setModalSort("low_marks");
@@ -1105,6 +1213,25 @@ export default function FacultyDashboard() {
                               minute: "2-digit",
                             })}
                           </span>
+                          {(r.timeTaken || r.timeTakenSeconds) && (
+                            <>
+                              <span style={{ fontSize: "0.68rem", color: "var(--text-3)" }}>•</span>
+                              <span
+                                style={{
+                                  fontSize: "0.68rem",
+                                  color: "var(--accent)",
+                                  fontWeight: 600,
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "0.2rem",
+                                }}
+                                title="Time taken by student"
+                              >
+                                <Clock size={10} />
+                                {r.timeTaken || formatDuration(r.timeTakenSeconds)}
+                              </span>
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1138,32 +1265,58 @@ export default function FacultyDashboard() {
                           /100
                         </span>
                       </span>
-                      <button
-                        onClick={(e) =>
-                          handleDownloadPDF(e, r.id, r.language, r.difficulty)
-                        }
-                        style={{
-                          background: "transparent",
-                          border: "none",
-                          color: "var(--accent)",
-                          cursor: "pointer",
-                          fontSize: "0.7rem",
-                          marginTop: "0.2rem",
-                          fontWeight: 600,
-                          padding: 0,
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "0.2rem",
-                        }}
-                        onMouseEnter={(e) =>
-                          (e.currentTarget.style.textDecoration = "underline")
-                        }
-                        onMouseLeave={(e) =>
-                          (e.currentTarget.style.textDecoration = "none")
-                        }
-                      >
-                        <FileText size={12} /> Download PDF
-                      </button>
+                      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginTop: "0.25rem" }}>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPlaybackSubmission(r);
+                          }}
+                          style={{
+                            background: "rgba(59, 130, 246, 0.12)",
+                            border: "1px solid rgba(59, 130, 246, 0.3)",
+                            borderRadius: 6,
+                            color: "var(--accent)",
+                            cursor: "pointer",
+                            fontSize: "0.7rem",
+                            fontWeight: 600,
+                            padding: "2px 8px",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "0.3rem",
+                            transition: "all 0.15s",
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(59, 130, 246, 0.25)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(59, 130, 246, 0.12)")}
+                          title="Replay keystroke timeline and detect copy-paste"
+                        >
+                          <Video size={11} /> Replay Strokes
+                        </button>
+                        <button
+                          onClick={(e) =>
+                            handleDownloadPDF(e, r.id, r.language, r.difficulty)
+                          }
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            color: "var(--text-3)",
+                            cursor: "pointer",
+                            fontSize: "0.7rem",
+                            fontWeight: 600,
+                            padding: 0,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "0.2rem",
+                          }}
+                          onMouseEnter={(e) =>
+                            (e.currentTarget.style.textDecoration = "underline")
+                          }
+                          onMouseLeave={(e) =>
+                            (e.currentTarget.style.textDecoration = "none")
+                          }
+                        >
+                          <FileText size={11} /> PDF
+                        </button>
+                      </div>
                     </div>
                   </motion.div>
                 ))}
@@ -1538,38 +1691,115 @@ export default function FacultyDashboard() {
                                 /100
                               </span>
                             </span>
-                            <button
-                              onClick={(e) =>
-                                handleDownloadPDF(
-                                  e,
-                                  r.id,
-                                  r.language,
-                                  r.difficulty,
-                                )
-                              }
-                              style={{
-                                background: "transparent",
-                                border: "none",
-                                color: "var(--accent)",
-                                cursor: "pointer",
-                                fontSize: "0.75rem",
-                                marginTop: "0.25rem",
-                                fontWeight: 600,
-                                padding: 0,
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "0.2rem",
-                              }}
-                              onMouseEnter={(e) =>
-                                (e.currentTarget.style.textDecoration =
-                                  "underline")
-                              }
-                              onMouseLeave={(e) =>
-                                (e.currentTarget.style.textDecoration = "none")
-                              }
-                            >
-                              <FileText size={12} /> PDF
-                            </button>
+                            <div style={{ display: "flex", gap: "0.4rem", alignItems: "center", marginTop: "0.35rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                              {/* Keystroke Integrity / Originality Badge */}
+                              <span
+                                style={{
+                                  fontSize: "0.68rem",
+                                  fontWeight: 700,
+                                  padding: "2px 6px",
+                                  borderRadius: 4,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "3px",
+                                  background: (r.originalityScore ?? 100) >= 70
+                                    ? "rgba(16, 185, 129, 0.12)"
+                                    : "rgba(239, 68, 68, 0.15)",
+                                  color: (r.originalityScore ?? 100) >= 70
+                                    ? "var(--green)"
+                                    : "var(--red)",
+                                  border: (r.originalityScore ?? 100) >= 70
+                                    ? "1px solid rgba(16, 185, 129, 0.3)"
+                                    : "1px solid rgba(239, 68, 68, 0.3)",
+                                }}
+                                title={`Originality & Cadence Integrity: ${r.originalityScore ?? 100}%`}
+                              >
+                                {(r.originalityScore ?? 100) >= 70 ? (
+                                  <ShieldCheck size={11} />
+                                ) : (
+                                  <ShieldAlert size={11} />
+                                )}
+                                {r.originalityScore ?? 100}% Integrity
+                              </span>
+
+                              {(r.timeTaken || r.timeTakenSeconds) && (
+                                <span
+                                  style={{
+                                    fontSize: "0.68rem",
+                                    fontWeight: 700,
+                                    padding: "2px 6px",
+                                    borderRadius: 4,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "3px",
+                                    background: "rgba(59, 130, 246, 0.12)",
+                                    color: "var(--accent)",
+                                    border: "1px solid rgba(59, 130, 246, 0.3)",
+                                  }}
+                                  title="Total time taken by student"
+                                >
+                                  <Clock size={11} />
+                                  {r.timeTaken || formatDuration(r.timeTakenSeconds)}
+                                </span>
+                              )}
+
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPlaybackSubmission(r);
+                                }}
+                                style={{
+                                  background: "rgba(59, 130, 246, 0.12)",
+                                  border: "1px solid rgba(59, 130, 246, 0.3)",
+                                  borderRadius: 6,
+                                  color: "var(--accent)",
+                                  cursor: "pointer",
+                                  fontSize: "0.75rem",
+                                  fontWeight: 600,
+                                  padding: "3px 8px",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "0.3rem",
+                                  transition: "all 0.15s",
+                                }}
+                                onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(59, 130, 246, 0.25)")}
+                                onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(59, 130, 246, 0.12)")}
+                                title="Replay keystroke timeline and detect copy-paste"
+                              >
+                                <Video size={12} /> Replay Strokes
+                              </button>
+                              <button
+                                onClick={(e) =>
+                                  handleDownloadPDF(
+                                    e,
+                                    r.id,
+                                    r.language,
+                                    r.difficulty,
+                                  )
+                                }
+                                style={{
+                                  background: "transparent",
+                                  border: "none",
+                                  color: "var(--text-3)",
+                                  cursor: "pointer",
+                                  fontSize: "0.75rem",
+                                  fontWeight: 600,
+                                  padding: 0,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "0.2rem",
+                                }}
+                                onMouseEnter={(e) =>
+                                  (e.currentTarget.style.textDecoration =
+                                    "underline")
+                                }
+                                onMouseLeave={(e) =>
+                                  (e.currentTarget.style.textDecoration = "none")
+                                }
+                              >
+                                <FileText size={12} /> PDF
+                              </button>
+                            </div>
                           </div>
                         </motion.div>
                       ))}
@@ -1581,6 +1811,273 @@ export default function FacultyDashboard() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Keystroke Time-Travel Replay — portaled to document.body to escape stacking context */}
+      {createPortal(
+        <AnimatePresence>
+          {playbackSubmission && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              style={{
+                position: "fixed",
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                width: "100vw",
+                height: "100vh",
+                background: isDark ? "#0d1117" : "#f6f8fa",
+                zIndex: 100000,
+                display: "flex",
+                flexDirection: "column",
+                overflow: "hidden",
+              }}
+            >
+            {/* Top Navigation & Student Header Bar */}
+            <div
+              style={{
+                padding: "0.6rem 1.25rem",
+                borderBottom: "1px solid var(--border)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                background: isDark ? "rgba(13, 17, 23, 0.98)" : "rgba(255, 255, 255, 0.98)",
+                flexWrap: "wrap",
+                gap: "0.75rem",
+                flexShrink: 0,
+                boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+              }}
+            >
+              {/* Left: Back button + Title */}
+              <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", minWidth: 0 }}>
+                <button
+                  onClick={() => setPlaybackSubmission(null)}
+                  style={{
+                    background: "var(--bg-3)",
+                    border: "1px solid var(--border)",
+                    color: "var(--text-1)",
+                    cursor: "pointer",
+                    padding: "0.4rem 0.8rem",
+                    borderRadius: 8,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.4rem",
+                    fontSize: "0.8rem",
+                    fontWeight: 600,
+                    transition: "all 0.15s",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "var(--accent-glow)";
+                    e.currentTarget.style.borderColor = "var(--accent)";
+                    e.currentTarget.style.color = "var(--accent)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "var(--bg-3)";
+                    e.currentTarget.style.borderColor = "var(--border)";
+                    e.currentTarget.style.color = "var(--text-1)";
+                  }}
+                  title="Return to Dashboard (Esc)"
+                >
+                  <ArrowLeft size={15} />
+                  <span>{selectedBox ? "Back to Attendees" : "Back to Dashboard"}</span>
+                </button>
+
+                <div
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 8,
+                    background: "linear-gradient(135deg, var(--accent), var(--accent-2))",
+                    color: "white",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                    boxShadow: "0 2px 10px var(--accent-glow)",
+                  }}
+                >
+                  <Video size={16} />
+                </div>
+
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    <span style={{ fontSize: "0.92rem", fontWeight: 700, color: "var(--text-1)" }}>
+                      {playbackSubmission.name || "Student"}
+                    </span>
+                    <span style={{ fontSize: "0.75rem", color: "var(--text-3)", fontFamily: "'JetBrains Mono', monospace" }}>
+                      ({playbackSubmission.regNumber || "N/A"})
+                    </span>
+                  </div>
+                  <span style={{ fontSize: "0.7rem", color: "var(--text-3)" }}>
+                    Keystroke Time-Travel Replay
+                  </span>
+                </div>
+              </div>
+
+              {/* Right: Metrics + Status chips + Close Button */}
+              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                {/* Language chip */}
+                <span
+                  style={{
+                    fontSize: "0.7rem",
+                    fontWeight: 600,
+                    padding: "0.2rem 0.55rem",
+                    borderRadius: 5,
+                    background: "var(--accent-glow)",
+                    color: "var(--accent)",
+                    border: "1px solid rgba(129,140,248,0.2)",
+                    fontFamily: "'JetBrains Mono', monospace",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  {playbackSubmission.language || "—"}
+                </span>
+
+                {/* Difficulty chip */}
+                <span className={`badge badge-${playbackSubmission.difficulty || "easy"}`} style={{ fontSize: "0.7rem" }}>
+                  {DIFF_LABELS[playbackSubmission.difficulty] || playbackSubmission.difficulty || "—"}
+                </span>
+
+                {/* Pass/Fail chip */}
+                <span
+                  style={{
+                    fontSize: "0.7rem",
+                    fontWeight: 700,
+                    padding: "0.2rem 0.55rem",
+                    borderRadius: 5,
+                    background: playbackSubmission.passed ? "var(--green-bg)" : "var(--red-bg)",
+                    color: playbackSubmission.passed ? "var(--green)" : "var(--red)",
+                    border: `1px solid ${playbackSubmission.passed ? "var(--green-border)" : "var(--red-border)"}`,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.25rem",
+                  }}
+                >
+                  {playbackSubmission.passed ? <Check size={11} strokeWidth={3} /> : <X size={11} strokeWidth={3} />}
+                  {playbackSubmission.passed ? "Passed" : "Failed"}
+                </span>
+
+                {/* Score */}
+                <span
+                  style={{
+                    fontWeight: 900,
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: "0.9rem",
+                    color: playbackSubmission.passed ? "var(--green)" : "var(--red)",
+                    marginLeft: "0.2rem",
+                  }}
+                >
+                  {playbackSubmission.score}
+                  <span style={{ fontSize: "0.65rem", color: "var(--text-3)", fontWeight: 500 }}>/100</span>
+                </span>
+
+                {/* Integrity badge */}
+                {playbackSubmission.originalityScore !== undefined && (
+                  <span
+                    style={{
+                      fontSize: "0.7rem",
+                      fontWeight: 700,
+                      padding: "0.2rem 0.55rem",
+                      borderRadius: 5,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "0.25rem",
+                      background: (playbackSubmission.originalityScore ?? 100) >= 70
+                        ? "var(--green-bg)"
+                        : "var(--red-bg)",
+                      color: (playbackSubmission.originalityScore ?? 100) >= 70
+                        ? "var(--green)"
+                        : "var(--red)",
+                      border: `1px solid ${(playbackSubmission.originalityScore ?? 100) >= 70 ? "var(--green-border)" : "var(--red-border)"}`,
+                    }}
+                    title={`Originality Score: ${playbackSubmission.originalityScore}%`}
+                  >
+                    {(playbackSubmission.originalityScore ?? 100) >= 70
+                      ? <ShieldCheck size={12} />
+                      : <ShieldAlert size={12} />}
+                    {playbackSubmission.originalityScore}% Integrity
+                  </span>
+                )}
+
+                {/* Time Taken Badge */}
+                {(playbackSubmission.timeTaken || playbackSubmission.timeTakenSeconds) && (
+                  <span
+                    style={{
+                      fontSize: "0.7rem",
+                      fontWeight: 700,
+                      padding: "0.2rem 0.55rem",
+                      borderRadius: 5,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "0.25rem",
+                      background: "rgba(59, 130, 246, 0.12)",
+                      color: "var(--accent)",
+                      border: "1px solid rgba(59, 130, 246, 0.25)",
+                    }}
+                    title="Total exam time taken by the student"
+                  >
+                    <Clock size={12} />
+                    {playbackSubmission.timeTaken || formatDuration(playbackSubmission.timeTakenSeconds)} Taken
+                  </span>
+                )}
+
+                {/* Close (X) button */}
+                <button
+                  onClick={() => setPlaybackSubmission(null)}
+                  style={{
+                    background: "transparent",
+                    border: "1px solid var(--border)",
+                    color: "var(--text-3)",
+                    cursor: "pointer",
+                    padding: "0.4rem",
+                    borderRadius: 8,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    transition: "all 0.15s",
+                    marginLeft: "0.25rem",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "var(--red-bg)";
+                    e.currentTarget.style.borderColor = "var(--red-border)";
+                    e.currentTarget.style.color = "var(--red)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "transparent";
+                    e.currentTarget.style.borderColor = "var(--border)";
+                    e.currentTarget.style.color = "var(--text-3)";
+                  }}
+                  title="Close Replay (Esc)"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+
+            {/* Main Playback Area */}
+            <div style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: "0.6rem 1.25rem 0.75rem", display: "flex", flexDirection: "column" }}>
+              <CodePlayback
+                submissionId={playbackSubmission.id}
+                token={localStorage.getItem("token") || ""}
+                language={playbackSubmission.language || "python"}
+                difficulty={playbackSubmission.difficulty || "medium"}
+                finalCode={playbackSubmission.code || ""}
+                studentName={playbackSubmission.name}
+                originalityScore={playbackSubmission.originalityScore}
+                timeTakenSeconds={
+                  playbackSubmission.timeTakenSeconds ??
+                  parseTimeToSec(playbackSubmission.timeTaken)
+                }
+              />
+            </div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </div>
   );
 }

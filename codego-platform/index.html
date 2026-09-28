@@ -3,12 +3,66 @@
 
 <head>
   <meta charset="UTF-8" />
+  <!-- Favicon Set -->
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+  <link rel="manifest" href="/site.webmanifest" />
+
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CodeGo</title>
+  
+  <!-- Primary Meta Tags -->
+  <title>CodeGo — Institutional AI Coding Assessment Platform</title>
+  <meta name="title" content="CodeGo — Institutional AI Coding Assessment Platform" />
   <meta name="description"
-    content="Professional coding assessment platform for students with AI-driven question generation and comprehensive evaluation." />
+    content="Professional coding assessment platform for higher education with automated AI evaluation, live compiler execution, and proctoring telemetry." />
   <meta name="theme-color" content="#0a0e1a" />
+  <meta name="robots" content="index, follow" />
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="CodeGo" />
+  <meta property="og:url" content="https://codego.dev/" />
+  <meta property="og:title" content="CodeGo — Institutional AI Coding Assessment Platform" />
+  <meta property="og:description"
+    content="Next-generation automated AI code evaluation, distributed compilation, and institutional analytics for universities." />
+  <meta property="og:image" content="/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:url" content="https://codego.dev/" />
+  <meta name="twitter:title" content="CodeGo — Institutional AI Coding Assessment Platform" />
+  <meta name="twitter:description"
+    content="Next-generation automated AI code evaluation, distributed compilation, and institutional analytics for universities." />
+  <meta name="twitter:image" content="/og-image.png" />
+
+  <!-- Preconnect for fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+  <!-- Privacy-conscious Analytics Helper -->
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag() { window.dataLayer.push(arguments); }
+    window.codegoAnalytics = {
+      trackEvent: function(category, action, label) {
+        if (localStorage.getItem('codego_cookie_consent') === 'accepted') {
+          console.log('[Analytics Event]', category, action, label);
+          gtag('event', action, { event_category: category, event_label: label });
+        }
+      },
+      trackPageView: function(pagePath) {
+        if (localStorage.getItem('codego_cookie_consent') === 'accepted') {
+          console.log('[Analytics PageView]', pagePath);
+          gtag('config', 'G-CODEGO_TRACKING_ID', { page_path: pagePath });
+        }
+      }
+    };
+  </script>
 </head>
 
 <body>

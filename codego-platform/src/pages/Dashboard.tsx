@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import Tilt from 'react-parallax-tilt';
 import axios from 'axios';
 import { Terminal, Coffee, Settings, Wrench, Zap, Hand, BarChart, GraduationCap, Target, CheckCircle, TrendingUp, Flame, Circle, AlertTriangle, Rocket } from 'lucide-react';
+import { usePageMeta } from '../hooks/usePageMeta';
 
 const LANGUAGES = [
   { id: 'python',     label: 'Python',     icon: <Terminal size={24} />, color: '#3b82f6', desc: 'v3.11' },
@@ -38,6 +39,11 @@ const item = {
 };
 
 export default function Dashboard() {
+  usePageMeta({
+    title: 'Student Dashboard | CodeGo',
+    description: 'Launch AI-generated coding assessments, choose language environments, and track performance benchmarks.',
+  });
+
   const rawUser = localStorage.getItem('user');
   let user: any = {};
   try { user = rawUser ? JSON.parse(rawUser) : {}; } catch { user = {}; }
@@ -63,18 +69,23 @@ export default function Dashboard() {
           timeLimitMinutes: diff === 'easy' ? 15 : diff === 'medium' ? 30 : 45,
           language: lang, difficulty: diff,
         };
+        sessionStorage.setItem('active_question', JSON.stringify({ question: mockQuestion, language: lang, difficulty: diff }));
         navigate('/assessment', { state: { question: mockQuestion, language: lang, difficulty: diff } });
         return;
       }
       const res = await axios.post('/api/questions/generate', { language: lang, difficulty: diff }, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      // Persist question to sessionStorage so the assessment page can recover
+      // if the component remounts (e.g., page refresh) and router state is lost.
+      sessionStorage.setItem('active_question', JSON.stringify({ question: res.data, language: lang, difficulty: diff }));
       navigate('/assessment', { state: { question: res.data, language: lang, difficulty: diff } });
     } catch {
       setError('Failed to generate question. Please try again.');
       setLoading(false);
     }
   };
+
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
@@ -172,6 +183,7 @@ export default function Dashboard() {
                   onClick={() => setLang(l.id)}
                   whileTap={{ scale: 0.96 }}
                   whileHover={{ scale: 1.03 }}
+                  className={lang === l.id ? 'card-select-pulse' : ''}
                   style={{
                     width: '100%', padding: '0.875rem 0.5rem',
                     background: lang === l.id ? `${l.color}14` : 'var(--bg-card)',
@@ -215,6 +227,7 @@ export default function Dashboard() {
                 onClick={() => setDiff(d.id)}
                 whileTap={{ scale: 0.97 }}
                 whileHover={{ scale: 1.02 }}
+                className={diff === d.id ? 'card-select-pulse' : ''}
                 style={{
                   padding: '1.125rem 1.25rem', textAlign: 'left',
                   background: diff === d.id ? d.bg : 'var(--bg-card)',
@@ -247,20 +260,50 @@ export default function Dashboard() {
         </AnimatePresence>
 
         <motion.button
+          layout
           id="startAssessmentBtn"
           onClick={handleStart}
           disabled={!canStart}
-          className="btn btn-primary btn-xl"
+          className={`btn btn-primary ${loading ? 'btn-lg' : 'btn-xl'}`}
           whileHover={canStart ? { scale: 1.01 } : {}}
           whileTap={canStart ? { scale: 0.99 } : {}}
-          style={{ fontSize: '0.95rem', fontWeight: 700 }}
+          transition={{ layout: { duration: 0.3, type: "spring", stiffness: 350, damping: 25 } }}
+          style={{ fontSize: '0.95rem', fontWeight: 700, position: 'relative', overflow: 'hidden' }}
         >
-          {loading
-            ? <><div className="spinner" /> AI is generating your question...</>
-            : (!lang || !diff)
-              ? 'Select language and difficulty above'
-              : <><Rocket size={18} /> Start {DIFFICULTIES.find(d => d.id === diff)?.label} {LANGUAGES.find(l => l.id === lang)?.label} Assessment</>
-          }
+          <AnimatePresence mode="wait">
+            {loading ? (
+              <motion.span
+                key="loading"
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                transition={{ duration: 0.2 }}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.6rem' }}
+              >
+                <span className="progress-ring" style={{ width: 18, height: 18 }} />
+                <span style={{ letterSpacing: '0.02em' }}>AI is generating your question…</span>
+              </motion.span>
+            ) : (!lang || !diff) ? (
+              <motion.span
+                key="prompt"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+              >
+                Select language and difficulty above
+              </motion.span>
+            ) : (
+              <motion.span
+                key="ready"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}
+              >
+                <Rocket size={18} /> Start {DIFFICULTIES.find(d => d.id === diff)?.label} {LANGUAGES.find(l => l.id === lang)?.label} Assessment
+              </motion.span>
+            )}
+          </AnimatePresence>
         </motion.button>
       </motion.div>
     </div>

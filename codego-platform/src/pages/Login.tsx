@@ -5,8 +5,14 @@ import axios from 'axios';
 import { useTheme } from '../context/ThemeContext';
 import ThemeToggle from '../components/ThemeToggle';
 import { Zap, AlertTriangle, EyeOff, Eye, ArrowRight, GraduationCap, Users } from 'lucide-react';
+import { usePageMeta } from '../hooks/usePageMeta';
 
 export default function Login() {
+  usePageMeta({
+    title: 'Sign In | CodeGo Platform',
+    description: 'Sign in to access your AI coding assessments, review evaluation history, or manage course exams on CodeGo.',
+  });
+
   const [regNumber, setRegNumber] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);

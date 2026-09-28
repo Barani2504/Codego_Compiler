@@ -16,10 +16,14 @@ export const REDIS_CLIENT = 'REDIS_CLIENT';
     {
       provide: REDIS_CLIENT,
       useFactory: (): Redis => {
+        // Only send AUTH when REDIS_PASSWORD is actually configured.
+        // Sending a placeholder/empty string to a no-auth Redis causes
+        // "NOAUTH Authentication required" which ioredis retries in a tight loop.
+        const redisPassword = process.env.REDIS_PASSWORD || '';
         const client = new Redis({
           host: process.env.REDIS_HOST || 'localhost',
           port: parseInt(process.env.REDIS_PORT || '6379', 10),
-          password: process.env.REDIS_PASSWORD || undefined,
+          ...(redisPassword ? { password: redisPassword } : {}),
           maxRetriesPerRequest: 3,
           enableReadyCheck: false,
           lazyConnect: true, // Don't block startup if Redis is briefly unavailable

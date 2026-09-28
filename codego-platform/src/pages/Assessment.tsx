@@ -1,11 +1,13 @@
 import { Component, useState, useEffect, useRef } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import Editor from "@monaco-editor/react";
 import axios from "axios";
 import { useTheme } from "../context/ThemeContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useSubmissionStream } from "../hooks/useSubmissionStream";
+import { useKeystrokeTelemetry } from "../hooks/useKeystrokeTelemetry";
 import {
   AlertTriangle,
   Lightbulb,
@@ -18,6 +20,7 @@ import {
   Check,
   ClipboardList,
 } from "lucide-react";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class AssessmentErrorBoundary extends Component<
@@ -85,24 +88,65 @@ const LANG_DEFAULTS: Record<string, string> = {
   css: "/* Write your CSS solution here */\nbody { margin: 0; font-family: sans-serif; }\n",
 };
 
-function useCountdown(minutes: number) {
-  const [timeLeft, setTimeLeft] = useState(minutes * 60);
+/**
+ * Countdown hook that persists the start time in sessionStorage.
+ * This makes the timer resilient to component remounts (page re-renders, theme
+ * changes) — a student cannot reset the clock by refreshing the page.
+ */
+function useCountdown(questionId: string, minutes: number) {
+  const storageKey = `assessment_start_${questionId}`;
+
+  const getTimeLeft = () => {
+    const stored = sessionStorage.getItem(storageKey);
+    if (stored) {
+      const startedAt = parseInt(stored, 10);
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      return Math.max(0, minutes * 60 - elapsed);
+    }
+    return minutes * 60;
+  };
+
+  const [timeLeft, setTimeLeft] = useState(getTimeLeft);
   const [running, setRunning] = useState(false);
+
   useEffect(() => {
     if (!running) return;
-    const id = setInterval(() => setTimeLeft((t) => Math.max(0, t - 1)), 1000);
+    const id = setInterval(() => setTimeLeft(getTimeLeft()), 1000);
     return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running]);
+
   const fmt = () =>
     `${String(Math.floor(timeLeft / 60)).padStart(2, "0")}:${String(timeLeft % 60).padStart(2, "0")}`;
-  return { timeLeft, fmt, start: () => setRunning(true), running };
+
+  const start = () => {
+    if (!sessionStorage.getItem(storageKey)) {
+      sessionStorage.setItem(storageKey, Date.now().toString());
+    }
+    setRunning(true);
+  };
+
+  const clear = () => sessionStorage.removeItem(storageKey);
+
+  return { timeLeft, fmt, start, running, clear };
 }
 
 function AssessmentInner() {
   const { state } = useLocation();
   const navigate = useNavigate();
   const { isDark } = useTheme();
-  const { question, language, difficulty } = state || {};
+
+  // Restore from sessionStorage if router state was lost (e.g., page refresh)
+  const resolvedState = (() => {
+    if (state?.question) return state;
+    try {
+      const stored = sessionStorage.getItem('active_question');
+      return stored ? JSON.parse(stored) : {};
+    } catch { return {}; }
+  })();
+
+  const { question, language, difficulty } = resolvedState;
+
   const DIFF_LABELS: Record<string, string> = {
     easy: "Foundational",
     medium: "Intermediate",
@@ -135,12 +179,58 @@ function AssessmentInner() {
     | null
   >(null);
   const [selectedRunIdx, setSelectedRunIdx] = useState(0);
-  const { timeLeft, fmt, start } = useCountdown(
+  const [questionLoading, setQuestionLoading] = useState(true);
+  const [revealedCount, setRevealedCount] = useState(0);
+  const [submissionPhase, setSubmissionPhase] = useState<
+    "submitting" | "queued" | "compiling" | "grading" | null
+  >(null);
+  const [queuePosition, setQueuePosition] = useState<number | null>(null);
+  const [currentSubmissionId, setCurrentSubmissionId] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (started) {
+      setQuestionLoading(true);
+      const timer = setTimeout(() => setQuestionLoading(false), 400);
+      return () => clearTimeout(timer);
+    }
+  }, [started]);
+
+  useEffect(() => {
+    if (runResults && runResults.length > 0) {
+      setRevealedCount(0);
+      let count = 0;
+      const id = setInterval(() => {
+        count++;
+        setRevealedCount(count);
+        if (count >= runResults.length) {
+          clearInterval(id);
+        }
+      }, 150);
+      return () => clearInterval(id);
+    } else {
+      setRevealedCount(0);
+    }
+  }, [runResults]);
+
+  const { timeLeft, fmt, start, running, clear } = useCountdown(
+    question?.id || 'unknown',
     question?.timeLimitMinutes || 30,
   );
 
-  // Ref to hold the polling interval so it can be cleared on unmount (prevents memory leak)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // ── SSE stream (replaces 2s polling) ──────────────────────────────────────
+  // The hook opens an EventSource for the active submissionId and returns
+  // the terminal event. Falls back to polling automatically if SSE is blocked.
+  const streamToken = submitting ? localStorage.getItem("token") : null;
+  const { event: streamEvent } = useSubmissionStream(currentSubmissionId, streamToken);
+
+  // ── Monaco editor instance ref (for telemetry hooks) ─────────────────
+  const [editorInstance, setEditorInstance] = useState<any>(null);
+  const telemetryToken = currentSubmissionId ? localStorage.getItem("token") : null;
+
+  // Silently capture keystroke dynamics and code deltas during assessment.
+  // No UI footprint — runs alongside the existing proctoring engine.
+  const { flush: flushTelemetry } = useKeystrokeTelemetry(editorInstance, currentSubmissionId, telemetryToken);
 
   const [bottomHeight, setBottomHeight] = useState(280);
   const [isDragging, setIsDragging] = useState(false);
@@ -171,13 +261,49 @@ function AssessmentInner() {
     if (!question) navigate("/dashboard");
   }, [question, navigate]);
 
-  // Clear polling interval if component unmounts mid-submission (e.g. user navigates away)
-  useEffect(
-    () => () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    },
-    [],
-  );
+  // ── React to SSE terminal event ─────────────────────────────────────────
+  // When the SSE stream emits, fetch the full gradeResult and navigate.
+  useEffect(() => {
+    if (!streamEvent || !submitting) return;
+    const token = localStorage.getItem("token");
+
+    if (streamEvent.status === "error") {
+      setSubmitError("Grading failed. Please try submitting again.");
+      setSubmitting(false);
+      setSubmissionPhase(null);
+      return;
+    }
+
+    if (streamEvent.status === "completed") {
+      axios
+        .get(`/api/submissions/${streamEvent.submissionId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        .then((detailRes) => {
+          if (!detailRes.data.gradeResult) {
+            setSubmitError("Grading completed but result data is missing.");
+            setSubmitting(false);
+            setSubmissionPhase(null);
+            return;
+          }
+          navigate("/results", {
+            state: {
+              result: detailRes.data.gradeResult,
+              submissionId: streamEvent.submissionId,
+              language,
+              difficulty,
+            },
+          });
+          clear();
+        })
+        .catch(() => {
+          setSubmitError("Failed to fetch result. Please check your connection.");
+          setSubmitting(false);
+          setSubmissionPhase(null);
+        });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamEvent]);
 
   const handleGetHint = async () => {
     if (hintsUsed >= 3) return;
@@ -263,10 +389,23 @@ function AssessmentInner() {
 
   const handleSubmit = async () => {
     setSubmitting(true);
+    setSubmissionPhase("submitting");
+    setQueuePosition(null);
+    setCurrentSubmissionId(null);
     try {
       const token = localStorage.getItem("token");
       if (token?.startsWith("demo-")) {
-        await new Promise((r) => setTimeout(r, 2200));
+        const demoId = "demo-sub-" + Math.floor(Math.random() * 89999 + 10000);
+        setCurrentSubmissionId(demoId);
+        await new Promise((r) => setTimeout(r, 600));
+        setSubmissionPhase("queued");
+        setQueuePosition(3);
+        await new Promise((r) => setTimeout(r, 700));
+        setSubmissionPhase("compiling");
+        await new Promise((r) => setTimeout(r, 700));
+        setSubmissionPhase("grading");
+        await new Promise((r) => setTimeout(r, 700));
+
         const testsPassed = Math.floor(Math.random() * 2) + 3;
         navigate("/results", {
           state: {
@@ -331,10 +470,13 @@ function AssessmentInner() {
         });
         return;
       }
+      const totalTimeLimitSec = (question?.timeLimitMinutes || 30) * 60;
+      const timeTakenSeconds = Math.max(1, totalTimeLimitSec - timeLeft);
+
       // ── POST code to backend — returns { submissionId, status: 'queued' } ──
       const res = await axios.post(
         "/api/submissions",
-        { questionId: question?.id, code, language },
+        { questionId: question?.id, code, language, timeTakenSeconds },
         {
           headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
         },
@@ -342,86 +484,30 @@ function AssessmentInner() {
 
       const submissionId: string = res.data.submissionId;
       if (!submissionId) {
-        alert("Submission failed: no submission ID returned from server.");
+        setSubmitError("Submission failed: no submission ID returned from server.");
         setSubmitting(false);
+        setSubmissionPhase(null);
         return;
       }
 
-      // ── Poll the lightweight /status endpoint until terminal ──────────────
-      let attempts = 0;
-      const MAX_ATTEMPTS = 600; // 600 × 2s = 20 min max
-      pollRef.current = setInterval(async () => {
-        attempts++;
-        try {
-          const statusRes = await axios.get(
-            `/api/submissions/${submissionId}/status`,
-            {
-              headers: { Authorization: `Bearer ${token}` }, // use captured token
-            },
-          );
+      setCurrentSubmissionId(submissionId);
+      flushTelemetry(submissionId, localStorage.getItem("token") || undefined);
+      setSubmissionPhase("queued");
+      setQueuePosition(res.data.position ?? res.data.queueDepth ?? 1);
+      setSubmitError(null);
 
-          const { status } = statusRes.data;
-
-          if (
-            status === "completed" ||
-            status === "error" ||
-            attempts > MAX_ATTEMPTS
-          ) {
-            clearInterval(pollRef.current!);
-            pollRef.current = null;
-
-            if (status === "error") {
-              alert("Grading failed. Please check system logs and try again.");
-              setSubmitting(false);
-              return;
-            }
-
-            if (attempts > MAX_ATTEMPTS) {
-              alert(
-                "Grading is taking longer than expected (>20 min). The AI engine may be busy. Please try again.",
-              );
-              setSubmitting(false);
-              return;
-            }
-
-            // ── Fetch full detail (includes gradeResult) once completed ──────
-            try {
-              const detailRes = await axios.get(
-                `/api/submissions/${submissionId}`,
-                {
-                  headers: { Authorization: `Bearer ${token}` }, // use captured token
-                },
-              );
-
-              if (!detailRes.data.gradeResult) {
-                alert(
-                  "Grading completed but result data is missing. Please try again.",
-                );
-                setSubmitting(false);
-                return;
-              }
-
-              navigate("/results", {
-                state: {
-                  result: detailRes.data.gradeResult,
-                  submissionId,
-                  language,
-                  difficulty,
-                },
-              });
-            } catch {
-              alert(
-                "Failed to fetch submission result. Please check your connection.",
-              );
-              setSubmitting(false);
-            }
-          }
-        } catch {
-          // Transient polling error — keep trying until attempt limit
-        }
-      }, 2000);
-    } catch {
+      // ── SSE will fire when the job completes ───────────────────────────
+      // The useSubmissionStream hook (above) listens to /status/stream and
+      // drives the phase transitions via the streamEvent useEffect.
+      // No polling loop needed here — this entire setInterval block is removed.
+    } catch (err: any) {
+      const msg =
+        err.response?.status === 429
+          ? "Rate limit reached: Please wait a few seconds before submitting again."
+          : err.response?.data?.message || err.message || "Submission failed.";
+      setSubmitError(msg);
       setSubmitting(false);
+      setSubmissionPhase(null);
     }
   };
 
@@ -640,26 +726,75 @@ function AssessmentInner() {
           </motion.button>
           <motion.button
             id="submitBtn"
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
+            whileHover={!submitting && !runningCode ? { scale: 1.03 } : {}}
+            whileTap={!submitting && !runningCode ? { scale: 0.97 } : {}}
             className="btn btn-primary btn-sm"
-            style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.35rem",
+              minWidth: 96,
+              justifyContent: "center",
+              transition: "all 0.25s ease",
+            }}
             onClick={handleSubmit}
             disabled={submitting || runningCode}
           >
-            {submitting ? (
-              <>
-                <div className="spinner" style={{ width: 14, height: 14 }} />
-                Running...
-              </>
-            ) : (
-              <>
-                <Zap size={14} /> Submit
-              </>
-            )}
+            <AnimatePresence mode="wait">
+              {submitting ? (
+                <motion.span
+                  key="submitting"
+                  initial={{ opacity: 0, scale: 0.85 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.85 }}
+                  transition={{ duration: 0.2 }}
+                  style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}
+                >
+                  <span className="progress-ring" style={{ width: 14, height: 14 }} />
+                  <span style={{ fontSize: "0.8rem" }}>
+                    {submissionPhase === "queued"
+                      ? "Queued"
+                      : submissionPhase === "compiling"
+                        ? "Compiling"
+                        : submissionPhase === "grading"
+                          ? "Grading"
+                          : "Submitting…"}
+                  </span>
+                </motion.span>
+              ) : (
+                <motion.span
+                  key="idle"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}
+                >
+                  <Zap size={14} /> Submit
+                </motion.span>
+              )}
+            </AnimatePresence>
           </motion.button>
         </div>
       </motion.div>
+
+      {/* Inline submission error banner (replaces alert()) */}
+      {submitError && (
+        <motion.div
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -6 }}
+          className="alert alert-error"
+          style={{ margin: '0 1.5rem 0.5rem', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+        >
+          <AlertTriangle size={14} />
+          {submitError}
+          <button
+            onClick={() => setSubmitError(null)}
+            style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', opacity: 0.7 }}
+            aria-label="Dismiss error"
+          >✕</button>
+        </motion.div>
+      )}
 
       {/* Split layout */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
@@ -691,86 +826,120 @@ function AssessmentInner() {
           </div>
           <div style={{ flex: 1, overflowY: "auto", padding: "1.25rem" }}>
             {activeTab === "problem" && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                <h2 style={{ fontSize: "1.05rem", marginBottom: "1rem" }}>
-                  {(DIFF_LABELS[difficulty] || language)?.toUpperCase()} Problem
-                </h2>
-                <div
-                  className="markdown-body"
-                  style={{ marginBottom: "1.5rem" }}
-                >
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {question.problemStatement?.split(/\n(?:Example|Examples|Sample Input)\b/i)[0]}
-                  </ReactMarkdown>
-                </div>
-                <div style={{ marginBottom: "1.25rem" }}>
-                  <div
-                    style={{
-                      fontSize: "0.72rem",
-                      fontWeight: 700,
-                      color: "var(--text-3)",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.06em",
-                      marginBottom: "0.5rem",
-                    }}
-                  >
-                    Sample Input
-                  </div>
-                  <div className="code-block">{question.sampleInput}</div>
-                </div>
-                <div>
-                  <div
-                    style={{
-                      fontSize: "0.72rem",
-                      fontWeight: 700,
-                      color: "var(--text-3)",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.06em",
-                      marginBottom: "0.5rem",
-                    }}
-                  >
-                    Expected Output
-                  </div>
-                  <div className="code-block">{question.sampleOutput}</div>
-                </div>
-
-                {/* AI Hint display (since dedicated tab is removed) */}
-                {hint && (
+              <AnimatePresence mode="wait">
+                {questionLoading ? (
                   <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    style={{
-                      marginTop: "1.5rem",
-                      background: "var(--accent-glow)",
-                      border: "1px solid rgba(99,102,241,0.25)",
-                      borderRadius: 10,
-                      padding: "1.25rem",
-                    }}
+                    key="skeleton"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    style={{ display: "flex", flexDirection: "column", gap: "1rem" }}
                   >
-                    <div
-                      style={{
-                        fontSize: "0.7rem",
-                        fontWeight: 700,
-                        color: "var(--accent)",
-                        marginBottom: "0.5rem",
-                        letterSpacing: "0.06em",
-                      }}
-                    >
-                      AI HINT #{hintsUsed}
+                    <div className="skeleton" style={{ width: "55%", height: 26, marginBottom: "0.5rem" }} />
+                    <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+                      <div className="skeleton" style={{ width: "100%", height: 14 }} />
+                      <div className="skeleton" style={{ width: "94%", height: 14 }} />
+                      <div className="skeleton" style={{ width: "97%", height: 14 }} />
+                      <div className="skeleton" style={{ width: "70%", height: 14 }} />
                     </div>
-                    <p
-                      style={{
-                        margin: 0,
-                        fontSize: "0.875rem",
-                        lineHeight: 1.7,
-                        color: "var(--text-1)",
-                      }}
+                    <div style={{ marginTop: "1rem" }}>
+                      <div className="skeleton" style={{ width: "28%", height: 14, marginBottom: "0.5rem" }} />
+                      <div className="skeleton" style={{ width: "100%", height: 60, borderRadius: 8 }} />
+                    </div>
+                    <div style={{ marginTop: "0.5rem" }}>
+                      <div className="skeleton" style={{ width: "32%", height: 14, marginBottom: "0.5rem" }} />
+                      <div className="skeleton" style={{ width: "100%", height: 60, borderRadius: 8 }} />
+                    </div>
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="content"
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <h2 style={{ fontSize: "1.05rem", marginBottom: "1rem" }}>
+                      {(DIFF_LABELS[difficulty] || language)?.toUpperCase()} Problem
+                    </h2>
+                    <div
+                      className="markdown-body"
+                      style={{ marginBottom: "1.5rem" }}
                     >
-                      {hint}
-                    </p>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {question.problemStatement?.split(/\n(?:Example|Examples|Sample Input)\b/i)[0]}
+                      </ReactMarkdown>
+                    </div>
+                    <div style={{ marginBottom: "1.25rem" }}>
+                      <div
+                        style={{
+                          fontSize: "0.72rem",
+                          fontWeight: 700,
+                          color: "var(--text-3)",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.06em",
+                          marginBottom: "0.5rem",
+                        }}
+                      >
+                        Sample Input
+                      </div>
+                      <div className="code-block">{question.sampleInput}</div>
+                    </div>
+                    <div>
+                      <div
+                        style={{
+                          fontSize: "0.72rem",
+                          fontWeight: 700,
+                          color: "var(--text-3)",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.06em",
+                          marginBottom: "0.5rem",
+                        }}
+                      >
+                        Expected Output
+                      </div>
+                      <div className="code-block">{question.sampleOutput}</div>
+                    </div>
+
+                    {/* AI Hint display (since dedicated tab is removed) */}
+                    {hint && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        style={{
+                          marginTop: "1.5rem",
+                          background: "var(--accent-glow)",
+                          border: "1px solid rgba(99,102,241,0.25)",
+                          borderRadius: 10,
+                          padding: "1.25rem",
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontSize: "0.7rem",
+                            fontWeight: 700,
+                            color: "var(--accent)",
+                            marginBottom: "0.5rem",
+                            letterSpacing: "0.06em",
+                          }}
+                        >
+                          AI HINT #{hintsUsed}
+                        </div>
+                        <p
+                          style={{
+                            margin: 0,
+                            fontSize: "0.875rem",
+                            lineHeight: 1.7,
+                            color: "var(--text-1)",
+                          }}
+                        >
+                          {hint}
+                        </p>
+                      </motion.div>
+                    )}
                   </motion.div>
                 )}
-              </motion.div>
+              </AnimatePresence>
             )}
           </div>
         </motion.div>
@@ -822,10 +991,14 @@ function AssessmentInner() {
             </span>
           </div>
           <div
+            className={`monaco-editor-wrap ${runningCode || submitting ? "compiling" : ""}`}
             style={{
               flex: 1,
               minHeight: 0,
               pointerEvents: isDragging ? "none" : "auto",
+              position: "relative",
+              border: "1px solid var(--border)",
+              transition: "border-color 0.3s ease, box-shadow 0.3s ease",
             }}
           >
             <Editor
@@ -835,6 +1008,7 @@ function AssessmentInner() {
               }
               value={code}
               onChange={(v) => setCode(v || "")}
+              onMount={(editor) => setEditorInstance(editor)}
               theme={isDark ? "vs-dark" : "light"}
               options={{
                 fontSize: 14,
@@ -976,7 +1150,7 @@ function AssessmentInner() {
                     Run code to see execution log and errors.
                   </div>
                 ) : runResults[selectedRunIdx]?.isError ? (
-                  <div>
+                  <div className="compile-error-slide">
                     <div
                       style={{
                         color: "var(--red)",
@@ -1120,9 +1294,13 @@ function AssessmentInner() {
                   </div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column" }}>
-                    {runResults.map((result: any, idx: number) => (
-                      <div
+                    {runResults.slice(0, revealedCount).map((result: any, idx: number) => (
+                      <motion.div
                         key={idx}
+                        initial={{ opacity: 0, y: 14, scale: 0.96 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        transition={{ type: "spring", stiffness: 350, damping: 25 }}
+                        className={result.passed ? "pulse-pass" : ""}
                         style={{
                           padding: "1rem",
                           borderBottom: "1px solid var(--border)",
@@ -1286,7 +1464,7 @@ function AssessmentInner() {
                             )}
                           </div>
                         )}
-                      </div>
+                      </motion.div>
                     ))}
                   </div>
                 )}
@@ -1294,41 +1472,135 @@ function AssessmentInner() {
             </div>
           </div>
 
-          {submitting && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              style={{
-                background: "rgba(99,102,241,0.1)",
-                backdropFilter: "blur(12px)",
-                borderTop: "1px solid rgba(99,102,241,0.2)",
-                padding: "0.875rem 1.25rem",
-                display: "flex",
-                alignItems: "center",
-                gap: "0.75rem",
-                flexShrink: 0,
-              }}
-            >
-              <div className="spinner" />
-              <span
+          <AnimatePresence>
+            {submitting && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 20 }}
+                transition={{ type: "spring", stiffness: 350, damping: 26 }}
                 style={{
-                  fontSize: "0.875rem",
-                  color: "var(--accent)",
-                  fontWeight: 600,
+                  background: "rgba(10, 15, 30, 0.96)",
+                  backdropFilter: "blur(16px)",
+                  borderTop: "1px solid rgba(129, 140, 248, 0.35)",
+                  padding: "0.75rem 1.25rem",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  flexShrink: 0,
+                  boxShadow: "0 -4px 20px rgba(0,0,0,0.4)",
+                  zIndex: 20,
+                  flexWrap: "wrap",
+                  gap: "0.75rem",
                 }}
               >
-                Running in secure environment · AI evaluation against
-                comprehensive test cases...
-              </span>
-            </motion.div>
-          )}
+                <div style={{ display: "flex", alignItems: "center", gap: "0.875rem" }}>
+                  <span className="progress-ring" style={{ width: 18, height: 18, borderWidth: 2 }} />
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <motion.span
+                        key={submissionPhase}
+                        initial={{ opacity: 0, x: -6 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: 6 }}
+                        transition={{ duration: 0.2 }}
+                        style={{
+                          fontSize: "0.85rem",
+                          color: "var(--accent)",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {submissionPhase === "submitting" && "Dispatching code to sandbox…"}
+                        {submissionPhase === "queued" && (
+                          queuePosition
+                            ? `Queued (${queuePosition} ahead · est. ~${Math.max(5, queuePosition * 3)}s wait)`
+                            : "Queued in compiler worker queue…"
+                        )}
+                        {submissionPhase === "compiling" && "Compiling in secure isolated sandbox…"}
+                        {submissionPhase === "grading" && "AI evaluating test cases & algorithmic complexity…"}
+                      </motion.span>
+                    </div>
+                    {currentSubmissionId && (
+                      <div
+                        style={{
+                          fontSize: "0.7rem",
+                          color: "var(--text-3)",
+                          fontFamily: "JetBrains Mono, monospace",
+                          marginTop: "0.1rem",
+                        }}
+                      >
+                        Submission #{currentSubmissionId.slice(0, 14)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Live Phase Step Indicators */}
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  {(["queued", "compiling", "grading"] as const).map((phase, idx) => {
+                    const phaseOrder = ["queued", "compiling", "grading"];
+                    const currentIdx = submissionPhase ? phaseOrder.indexOf(submissionPhase) : -1;
+                    const isDone = currentIdx > idx;
+                    const isActive = submissionPhase === phase;
+
+                    return (
+                      <div
+                        key={phase}
+                        style={{
+                          padding: "0.2rem 0.6rem",
+                          borderRadius: "6px",
+                          background: isActive
+                            ? "rgba(129, 140, 248, 0.18)"
+                            : isDone
+                              ? "rgba(34, 197, 94, 0.12)"
+                              : "rgba(255, 255, 255, 0.04)",
+                          color: isActive
+                            ? "var(--accent)"
+                            : isDone
+                              ? "var(--green)"
+                              : "var(--text-3)",
+                          fontWeight: isActive || isDone ? 600 : 400,
+                          fontSize: "0.75rem",
+                          textTransform: "capitalize",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "0.3rem",
+                          border: `1px solid ${
+                            isActive
+                              ? "rgba(129, 140, 248, 0.45)"
+                              : isDone
+                                ? "rgba(34, 197, 94, 0.3)"
+                                : "transparent"
+                          }`,
+                          transition: "all 0.3s ease",
+                        }}
+                      >
+                        {isDone ? (
+                          <Check size={12} />
+                        ) : isActive ? (
+                          <span className="pulse-dot" style={{ width: 6, height: 6 }} />
+                        ) : null}
+                        {phase}
+                      </div>
+                    );
+                  })}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </motion.div>
       </div>
+
     </div>
   );
 }
 
 export default function Assessment() {
+  usePageMeta({
+    title: 'Live Coding Assessment | CodeGo',
+    description: 'Active coding session with Monaco editor, real-time sandboxed compilation, and AI assessment grading.',
+  });
+
   return (
     <AssessmentErrorBoundary>
       <AssessmentInner />

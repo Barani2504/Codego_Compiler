@@ -40,8 +40,16 @@ async function chromaQuery(
   difficulty: string,
   limit = CHROMA_BATCH,
 ): Promise<any[]> {
-  const safeUrl = chromaUrl.replace('localhost', '127.0.0.1');
-  const client = new ChromaClient({ path: safeUrl });
+  let host = '127.0.0.1';
+  let port = 8000;
+  let ssl = false;
+  try {
+    const url = new URL(chromaUrl.replace('localhost', '127.0.0.1'));
+    host = url.hostname;
+    port = parseInt(url.port || (url.protocol === 'https:' ? '443' : '80'), 10);
+    ssl = url.protocol === 'https:';
+  } catch {}
+  const client = new ChromaClient({ host, port, ssl });
   
   try {
     const col = await client.getCollection({ 
@@ -174,4 +182,32 @@ export class QuestionsService {
       `Please run: node scripts/seed-chroma.js`,
     );
   }
+
+  /**
+   * Pre-warm Redis cache with questions from Postgres DB.
+   * Eliminates initial DB hit spikes when thousands of students open an assessment simultaneously.
+   */
+  async prewarmCache(limit = 100): Promise<{ cachedCount: number; keys: string[] }> {
+    const questions = await this.questionsRepo.find({
+      take: limit,
+      order: { id: 'DESC' },
+    });
+
+    const pipeline = this.redis.pipeline();
+    const cachedKeys: string[] = [];
+
+    for (const q of questions) {
+      const key = `question:${q.id}`;
+      pipeline.setex(key, 3600, JSON.stringify(q));
+      cachedKeys.push(key);
+    }
+
+    if (cachedKeys.length > 0) {
+      await pipeline.exec();
+    }
+
+    this.logger.log(`[Cache Pre-warm] Preloaded ${cachedKeys.length} questions into Redis (TTL 1h)`);
+    return { cachedCount: cachedKeys.length, keys: cachedKeys };
+  }
 }
+

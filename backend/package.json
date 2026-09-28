@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@chroma-core/default-embed": "^0.1.9",
+    "@nest-lab/throttler-storage-redis": "^1.2.0",
     "@nestjs/bull": "^11.0.4",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.4",
@@ -28,6 +29,7 @@
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/throttler": "^6.5.0",
     "@nestjs/typeorm": "^11.0.1",
     "axios": "^1.15.2",
     "bcrypt": "^6.0.0",
@@ -38,6 +40,7 @@
     "dotenv": "^17.4.2",
     "helmet": "^8.1.0",
     "ioredis": "^5.10.1",
+    "p-limit": "^3.1.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "pdfkit": "^0.18.0",

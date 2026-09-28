@@ -1,0 +1,17 @@
+User-agent: *
+Allow: /
+Allow: /#/
+Allow: /#/login
+Allow: /#/privacy
+Allow: /#/terms
+Allow: /#/thank-you
+
+# Disallow private/authenticated student & faculty evaluation areas from web scrapers
+Disallow: /#/assessment
+Disallow: /#/dashboard
+Disallow: /#/profile
+Disallow: /#/faculty
+Disallow: /#/change-password
+Disallow: /#/results
+
+Sitemap: https://codego.dev/sitemap.xml

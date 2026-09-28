@@ -7,6 +7,7 @@ import { useTheme } from '../context/ThemeContext';
 import axios from 'axios';
 import type { ErrorInfo, ReactNode } from 'react';
 import { Target, CheckCircle, TrendingUp, Trophy, Flame, Star, Zap, Terminal, Coffee, Settings, Wrench, Clock, Check, X, AlertTriangle } from 'lucide-react';
+import { usePageMeta } from '../hooks/usePageMeta';
 
 class ProfileErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   constructor(props: any) { super(props); this.state = { hasError: false }; }
@@ -62,6 +63,11 @@ const container = { hidden: { opacity: 0 }, visible: { opacity: 1, transition: {
 const item = { hidden: { opacity: 0, y: 16 }, visible: { opacity: 1, y: 0, transition: { type: 'spring' as const, stiffness: 350, damping: 28 } } };
 
 export default function Profile() {
+  usePageMeta({
+    title: 'Student Analytics & Progress | CodeGo',
+    description: 'Track coding performance benchmarks, streaks, language proficiency, and submission history.',
+  });
+
   return <ProfileErrorBoundary><ProfileContent /></ProfileErrorBoundary>;
 }
 

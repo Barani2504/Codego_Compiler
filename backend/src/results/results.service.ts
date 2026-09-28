@@ -96,32 +96,26 @@ export class ResultsService {
 
       doc.moveDown(0.8);
 
-      // Test cases
+      // Test case summary counts (without revealing test case inputs/outputs)
+      const testsFailed = Math.max(
+        0,
+        (result.testsTotal || 0) - (result.testsPassed || 0),
+      );
       doc
         .fontSize(11)
         .font('Helvetica-Bold')
-        .text('TEST CASE RESULTS', { underline: true })
+        .text('TEST CASE SUMMARY', { underline: true })
         .moveDown(0.3);
-      result.testDetails?.forEach((tc: any) => {
-        const color = tc.passed ? '#16a34a' : '#dc2626';
-        doc
-          .fillColor(color)
-          .font('Helvetica-Bold')
-          .fontSize(10)
-          .text(
-            `${tc.passed ? '✓' : '✗'} Test Case ${tc.index}: ${tc.passed ? 'PASSED' : 'FAILED'}`,
-          );
-        if (!tc.passed) {
-          doc
-            .fillColor('#6b7280')
-            .font('Helvetica')
-            .fontSize(9)
-            .text(`  Expected: ${tc.expectedOutput}`)
-            .text(`  Got:      ${tc.actualOutput}`);
-        }
-        doc.fillColor('#000000').moveDown(0.2);
-      });
-
+      doc
+        .font('Helvetica')
+        .fontSize(10)
+        .fillColor('#000000')
+        .text(`Total Test Cases:   ${result.testsTotal || 0}`)
+        .fillColor('#16a34a')
+        .text(`Test Cases Passed:  ${result.testsPassed || 0}`)
+        .fillColor(testsFailed > 0 ? '#dc2626' : '#6b7280')
+        .text(`Test Cases Failed:  ${testsFailed}`)
+        .fillColor('#000000');
       doc.moveDown(0.5);
 
       // AI feedback

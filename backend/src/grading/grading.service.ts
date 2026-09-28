@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { OllamaCircuitBreakerService } from './ollama-circuit-breaker.service';
 import axios from 'axios';
 
 // ─── Recommended Models ──────────────────────────────────────────────────────
@@ -11,6 +12,8 @@ import axios from 'axios';
 @Injectable()
 export class GradingService {
   private readonly logger = new Logger(GradingService.name);
+
+  constructor(private readonly circuitBreaker: OllamaCircuitBreakerService) {}
 
   async grade(
     code: string,
@@ -47,12 +50,8 @@ export class GradingService {
 
     const testsPassed = testDetails.filter((t) => t.passed).length;
     const testsTotal = testDetails.length;
-    const testScore =
-      testsTotal > 0 ? Math.round((testsPassed / testsTotal) * 60) : 30;
 
-    // Stage 2: AI quality analysis — NOTE: this was already kicked off in parallel
-    // by the processor (analyzeCode is called with a placeholder Promise.all).
-    // The aiFeedback here is the resolved value passed in from the processor.
+    // Stage 2: AI quality analysis
     const aiFeedback = await this.analyzeCode(
       code,
       language,
@@ -62,13 +61,22 @@ export class GradingService {
       testsTotal,
     );
 
-    const finalScore = Math.min(
-      100,
-      testScore + (aiFeedback.qualityScore || 0),
-    );
+    const isDegraded = !!aiFeedback?.degraded;
+    const testScore =
+      testsTotal > 0
+        ? isDegraded
+          ? Math.round((testsPassed / testsTotal) * 100)
+          : Math.round((testsPassed / testsTotal) * 60)
+        : (isDegraded ? 60 : 30);
+
+    const finalScore = isDegraded
+      ? testScore
+      : Math.min(100, testScore + (aiFeedback.qualityScore || 0));
 
     const isPass =
-      testsPassed === testsTotal || (finalScore >= 50 && testScore >= 30);
+      testsTotal > 0
+        ? testsPassed === testsTotal || (testsPassed / testsTotal >= 0.6 && finalScore >= 60)
+        : finalScore >= 60;
 
     return {
       testsPassed,
@@ -118,12 +126,20 @@ export class GradingService {
 
     const testsPassed = testDetails.filter((t) => t.passed).length;
     const testsTotal = testDetails.length;
+    const isDegraded = !!aiFeedback?.degraded;
+
+    // When degraded, score purely on test cases rescaled to 100 points
     const testScore =
-      testsTotal > 0 ? Math.round((testsPassed / testsTotal) * 60) : 30;
+      testsTotal > 0
+        ? isDegraded
+          ? Math.round((testsPassed / testsTotal) * 100)
+          : Math.round((testsPassed / testsTotal) * 60)
+        : (isDegraded ? 60 : 30);
 
     // Recalculate the AI qualityScore now that we know actual pass/fail results.
     // Clamp it based on test performance so a bad submission can't get a high AI score.
     const qualityScore = (() => {
+      if (isDegraded) return 0;
       const raw = aiFeedback.qualityScore;
       const aiScore =
         raw !== undefined && raw >= 0
@@ -138,9 +154,11 @@ export class GradingService {
       return aiScore;
     })();
 
-    const finalScore = Math.min(100, testScore + qualityScore);
+    const finalScore = isDegraded ? testScore : Math.min(100, testScore + qualityScore);
     const isPass =
-      testsPassed === testsTotal || (finalScore >= 50 && testScore >= 30);
+      testsTotal > 0
+        ? testsPassed === testsTotal || (testsPassed / testsTotal >= 0.6 && finalScore >= 60)
+        : finalScore >= 60;
 
     return {
       testsPassed,
@@ -246,31 +264,49 @@ You MUST return a JSON object exactly like this (replace every placeholder with 
 STRICT RULE: Do NOT use the words 'placeholder' or 'suggestion 1' in your response. Reference the student's actual code (e.g., mention variable names like 'distinctSubs' or 'S').`;
 
     try {
-      const response = await axios.post(
-        `${process.env.OLLAMA_URL || 'http://localhost:11434'}/api/generate`,
-        {
-          model:
-            process.env.OLLAMA_GRADING_MODEL ||
-            process.env.OLLAMA_MODEL ||
-            'qwen2.5-coder:1.5b',
-          prompt,
-          stream: false,
-          format: 'json',
-          options: {
-            temperature: 0.1, // More deterministic/consistent scoring
-            num_predict: 512, // Smaller = faster (JSON response is small)
-            top_p: 0.9,
-            top_k: 40,
-          },
+      const ollamaData = await this.circuitBreaker.execute(
+        async () => {
+          const res = await axios.post(
+            `${process.env.OLLAMA_URL || 'http://localhost:11434'}/api/generate`,
+            {
+              model:
+                process.env.OLLAMA_GRADING_MODEL ||
+                process.env.OLLAMA_MODEL ||
+                'qwen2.5-coder:1.5b',
+              prompt,
+              stream: false,
+              format: 'json',
+              options: {
+                temperature: 0.1, // More deterministic/consistent scoring
+                num_predict: 512, // Smaller = faster (JSON response is small)
+                top_p: 0.9,
+                top_k: 40,
+              },
+            },
+            {
+              timeout: 60000, // 60-second cap to allow model cold start / CPU inference
+            },
+          );
+          return res.data; // return just the payload, not the full AxiosResponse
         },
-        {
-          timeout: 30000, // 30-second cap (lightweight model is fast)
-        },
+        // ── Circuit-breaker fallback: return degraded result ──────────────
+        // When Ollama is down, we score purely on test cases (no AI component).
+        // The 'degraded' flag tells the processor to rescale scoring and marks
+        // the submission for a faculty-side re-grade queue once Ollama recovers.
+        () => ({
+          response: JSON.stringify({
+            codeQuality: 'AI analysis temporarily unavailable',
+            timeComplexity: 'N/A',
+            qualityScore: -1,
+            suggestions: ['AI qualitative review will be available after system recovery.'],
+            overallComment: 'Scored on test cases only — AI review temporarily degraded.',
+            degraded: true,
+          }),
+        }),
+        60_000,
       );
 
-      const data = response.data;
-      // Robust JSON extraction
-      const raw = data.response;
+      const raw = ollamaData.response;
       let parsed: any = {};
       const start = raw.indexOf('{');
       const end = raw.lastIndexOf('}');
@@ -363,6 +399,7 @@ STRICT RULE: Do NOT use the words 'placeholder' or 'suggestion 1' in your respon
         suggestions: ['Review your logic for any edge cases.'],
         overallComment:
           'Automated test cases passed. Code quality analysis fell back to default.',
+        degraded: true,
       };
     }
   }

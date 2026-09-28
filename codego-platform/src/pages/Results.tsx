@@ -5,6 +5,7 @@ import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'framer-motion';
 import Tilt from 'react-parallax-tilt';
 import axios from 'axios';
+import { usePageMeta } from '../hooks/usePageMeta';
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 class ResultsErrorBoundary extends Component<
@@ -37,8 +38,40 @@ class ResultsErrorBoundary extends Component<
   }
 }
 
+// ─── Animated Counter ─────────────────────────────────────────────────────────
+function AnimatedCounter({ value, duration = 1100 }: { value: number; duration?: number }) {
+  const [displayValue, setDisplayValue] = useState(0);
+
+  useEffect(() => {
+    let startTimestamp: number | null = null;
+    const startVal = 0;
+    const targetVal = value;
+
+    const step = (timestamp: number) => {
+      if (!startTimestamp) startTimestamp = timestamp;
+      const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+      const easeOut = 1 - Math.pow(1 - progress, 3);
+      setDisplayValue(Math.round(startVal + (targetVal - startVal) * easeOut));
+
+      if (progress < 1) {
+        window.requestAnimationFrame(step);
+      }
+    };
+
+    const animId = window.requestAnimationFrame(step);
+    return () => window.cancelAnimationFrame(animId);
+  }, [value, duration]);
+
+  return <>{displayValue}</>;
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 function ResultsInner() {
+  usePageMeta({
+    title: 'Assessment Results & Feedback | CodeGo',
+    description: 'Detailed assessment results, test case execution status, and AI-driven code critique.',
+  });
+
   const { state } = useLocation();
   const { result, language, difficulty, submissionId } = state || {};
 
@@ -55,18 +88,18 @@ function ResultsInner() {
   }
 
   // ── Safe defaults — guard every field the AI/backend might omit ──────────
-  const score       = Number(result.score)       || 0;
+  const score = Number(result.score) || 0;
   const testsPassed = Number(result.testsPassed) || 0;
-  const testsTotal  = Number(result.testsTotal)  || 0;
-  const passed      = Boolean(result.passed);
-  const testDetails: any[] = Array.isArray(result.testDetails) ? result.testDetails : [];
-  const aiFeedback  = result.aiFeedback || null;
-  const passRate    = testsTotal > 0 ? Math.round((testsPassed / testsTotal) * 100) : 0;
-  const testScore   = testsTotal > 0 ? Math.round((testsPassed / testsTotal) * 60) : 0;
-  const aiScore     = Number(aiFeedback?.qualityScore) || null; // null = not available
+  const testsTotal = Number(result.testsTotal) || 0;
+  const passed = Boolean(result.passed);
+  const testsFailed = Math.max(0, testsTotal - testsPassed);
+  const aiFeedback = result.aiFeedback || null;
+  const passRate = testsTotal > 0 ? Math.round((testsPassed / testsTotal) * 100) : 0;
+  const testScore = testsTotal > 0 ? Math.round((testsPassed / testsTotal) * 60) : 0;
+  const aiScore = Number(aiFeedback?.qualityScore) || null; // null = not available
 
-  const [expandedTc, setExpandedTc] = useState<number | null>(null);
   const [expandedAiBox, setExpandedAiBox] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (passed) {
@@ -83,17 +116,16 @@ function ResultsInner() {
 
   const downloadPDF = async () => {
     const token = localStorage.getItem('token');
-    if (token?.startsWith('demo-')) { alert('PDF download is simulated in demo mode.'); return; }
-    if (!submissionId) { alert('Submission ID not found. Cannot download PDF.'); return; }
+    if (token?.startsWith('demo-')) { setDownloadError('PDF download is not available in demo mode.'); return; }
+    if (!submissionId) { setDownloadError('Submission ID not found. Cannot download PDF.'); return; }
+    setDownloadError(null);
 
     try {
-      // Use axios to fetch the blob instead of window.open. 
-      // This works cleanly in both Web and Electron without spawning a blank window.
       const res = await axios.get(`/api/results/${submissionId}/download`, {
         headers: { Authorization: `Bearer ${token}` },
         responseType: 'blob'
       });
-      
+
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
       const link = document.createElement('a');
       link.href = url;
@@ -102,8 +134,8 @@ function ResultsInner() {
       link.click();
       link.parentNode?.removeChild(link);
       window.URL.revokeObjectURL(url);
-    } catch (err) {
-      alert('Failed to download PDF. Please try again later.');
+    } catch {
+      setDownloadError('Failed to download PDF. Please try again later.');
     }
   };
 
@@ -134,6 +166,19 @@ function ResultsInner() {
         </div>
       </motion.div>
 
+      {/* Inline download error (replaces alert()) */}
+      {downloadError && (
+        <motion.div
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="alert alert-error"
+          style={{ marginBottom: '1rem', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+        >
+          ⚠ {downloadError}
+          <button onClick={() => setDownloadError(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', opacity: 0.7 }}>✕</button>
+        </motion.div>
+      )}
+
       {/* Score banner */}
       <Tilt tiltMaxAngleX={3} tiltMaxAngleY={3} scale={1.01} transitionSpeed={800} glareEnable glareMaxOpacity={0.06}>
         <motion.div
@@ -159,7 +204,7 @@ function ResultsInner() {
               marginBottom: '0.5rem',
             }}
           >
-            {score}<span style={{ fontSize: '35%', color: 'var(--text-3)', fontWeight: 500 }}>/100</span>
+            <AnimatedCounter value={score} duration={1200} /><span style={{ fontSize: '35%', color: 'var(--text-3)', fontWeight: 500 }}>/100</span>
           </motion.div>
           <motion.div
             animate={!passed ? { x: [-5, 5, -5, 5, 0] } : {}}
@@ -169,11 +214,11 @@ function ResultsInner() {
             {passed ? <><CheckCircle size={20} /> PASSED</> : <><XCircle size={20} /> NOT PASSED</>}
           </motion.div>
           {!passed && (
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.9 }}
               style={{ fontSize: '0.9rem', color: 'var(--text-1)', marginBottom: '1.25rem', background: 'rgba(255,255,255,0.05)', padding: '0.625rem 1rem', borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}
             >
-              <Rocket size={16} color="var(--accent)" /> Every expert was once a beginner. Keep practicing, you've got this! 
+              <Rocket size={16} color="var(--accent)" /> Every expert was once a beginner. Keep practicing, you've got this!
             </motion.div>
           )}
           <div style={{ display: 'flex', gap: '0.625rem', justifyContent: 'center', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
@@ -196,10 +241,10 @@ function ResultsInner() {
       {/* Score breakdown */}
       <motion.div variants={container} initial="hidden" animate="visible" className="grid-2" style={{ marginBottom: '1.5rem' }}>
         {[
-          { icon: <Beaker size={24} />, label: 'TEST CASE SCORE', value: `${testScore}`, sub: '/60', color: 'var(--blue)' },
-          { icon: <BarChart size={24} />, label: 'PASS RATE', value: `${passRate}%`, sub: ` (${testsPassed}/${testsTotal})`, color: passRate === 100 ? 'var(--green)' : passRate >= 60 ? 'var(--yellow)' : 'var(--red)' },
+          { icon: <Beaker size={24} />, label: 'TEST CASE SCORE', val: testScore, suffix: '', sub: '/60', color: 'var(--blue)' },
+          { icon: <BarChart size={24} />, label: 'PASS RATE', val: passRate, suffix: '%', sub: ` (${testsPassed}/${testsTotal})`, color: passRate === 100 ? 'var(--green)' : passRate >= 60 ? 'var(--yellow)' : 'var(--red)' },
           ...(aiScore !== null ? [
-            { icon: <Bot size={24} />, label: 'AI QUALITY SCORE', value: `${aiScore}`, sub: '/40', color: 'var(--accent-2)' }
+            { icon: <Bot size={24} />, label: 'AI QUALITY SCORE', val: aiScore, suffix: '', sub: '/40', color: 'var(--accent-2)' }
           ] : []),
         ].map(s => (
           <motion.div key={s.label} variants={item}>
@@ -208,7 +253,7 @@ function ResultsInner() {
                 <div style={{ width: 48, height: 48, borderRadius: 12, fontSize: '1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--accent-glow)', flexShrink: 0 }}>{s.icon}</div>
                 <div>
                   <div style={{ fontSize: '1.5rem', fontWeight: 900, color: s.color }}>
-                    {s.value}<span style={{ fontSize: '0.875rem', color: 'var(--text-3)', fontWeight: 500 }}>{s.sub}</span>
+                    <AnimatedCounter value={s.val} />{s.suffix}<span style={{ fontSize: '0.875rem', color: 'var(--text-3)', fontWeight: 500 }}>{s.sub}</span>
                   </div>
                   <div style={{ fontSize: '0.7rem', color: 'var(--text-3)', fontWeight: 700, letterSpacing: '0.06em' }}>{s.label}</div>
                 </div>
@@ -218,97 +263,123 @@ function ResultsInner() {
         ))}
       </motion.div>
 
-      {/* Test cases */}
-      <motion.div variants={container} initial="hidden" animate="visible"
-        className="card-glass" style={{ marginBottom: '1.5rem', padding: 0, overflow: 'hidden' }}>
-        <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <h3 style={{ margin: 0, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Beaker size={18} /> Test Cases</h3>
-          <div style={{ display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--green)' }}>{testsPassed} passed</span>
-            <span style={{ color: 'var(--text-3)' }}>/</span>
-            <span style={{ fontSize: '0.875rem', color: 'var(--text-2)' }}>{testsTotal}</span>
-            <div style={{ width: 56, marginLeft: '0.5rem' }}>
-              <div className="progress-bar">
-                <div className="progress-fill" style={{ width: `${passRate}%`, background: passRate === 100 ? 'var(--green)' : passRate >= 60 ? 'var(--yellow)' : 'var(--red)' }} />
+      {/* Test Case Execution Summary (Counts Only - No test case content revealed) */}
+      <motion.div variants={item}
+        className="card-glass" style={{ marginBottom: '1.5rem', padding: '1.5rem 1.75rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.25rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <div style={{
+              width: 42, height: 42, borderRadius: 10,
+              background: passed ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: passed ? 'var(--green)' : 'var(--red)',
+            }}>
+              <Beaker size={22} />
+            </div>
+            <div>
+              <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700 }}>Test Case Summary</h3>
+              <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-3)' }}>
+                {passed ? 'All required test cases passed successfully' : `${testsFailed} test ${testsFailed === 1 ? 'case' : 'cases'} failed`}
+              </p>
+            </div>
+          </div>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.4rem',
+            padding: '0.45rem 1rem',
+            borderRadius: 8,
+            fontSize: '0.85rem',
+            fontWeight: 800,
+            letterSpacing: '0.04em',
+            background: passed ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)',
+            color: passed ? 'var(--green)' : 'var(--red)',
+            border: `1px solid ${passed ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
+          }}>
+            {passed ? <><Check size={16} strokeWidth={2.5} /> PASSED</> : <><X size={16} strokeWidth={2.5} /> NOT PASSED</>}
+          </div>
+        </div>
+
+        {/* Passed vs Failed Metrics Grid */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.85rem' }}>
+          <div style={{
+            background: 'rgba(34,197,94,0.08)',
+            border: '1px solid rgba(34,197,94,0.25)',
+            borderRadius: 10,
+            padding: '0.85rem 1rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+          }}>
+            <div style={{ width: 34, height: 34, borderRadius: '50%', background: 'rgba(34,197,94,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--green)', flexShrink: 0 }}>
+              <Check size={18} strokeWidth={2.5} />
+            </div>
+            <div>
+              <div style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--green)', lineHeight: 1.1 }}>
+                {testsPassed}
               </div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-2)', fontWeight: 600 }}>Test Cases Passed</div>
+            </div>
+          </div>
+
+          <div style={{
+            background: 'rgba(239,68,68,0.08)',
+            border: '1px solid rgba(239,68,68,0.25)',
+            borderRadius: 10,
+            padding: '0.85rem 1rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+          }}>
+            <div style={{ width: 34, height: 34, borderRadius: '50%', background: 'rgba(239,68,68,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--red)', flexShrink: 0 }}>
+              <X size={18} strokeWidth={2.5} />
+            </div>
+            <div>
+              <div style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--red)', lineHeight: 1.1 }}>
+                {testsFailed}
+              </div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-2)', fontWeight: 600 }}>Test Cases Failed</div>
+            </div>
+          </div>
+
+          <div style={{
+            background: 'rgba(255,255,255,0.03)',
+            border: '1px solid var(--border)',
+            borderRadius: 10,
+            padding: '0.85rem 1rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+          }}>
+            <div style={{ width: 34, height: 34, borderRadius: '50%', background: 'rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-1)', flexShrink: 0 }}>
+              <BarChart size={18} />
+            </div>
+            <div>
+              <div style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--text-1)', lineHeight: 1.1 }}>
+                {testsTotal}
+              </div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-3)', fontWeight: 600 }}>Total Test Cases</div>
             </div>
           </div>
         </div>
-        {testDetails.length === 0 ? (
-          <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-3)', fontSize: '0.9rem' }}>
-            No test case details available.
-          </div>
-        ) : testDetails.map((tc: any, i: number) => {
-          const isOpen = expandedTc === i;
-          const tcPassed = tc?.passed;
-          return (
-            <div key={tc?.index ?? i} style={{ borderBottom: i < testDetails.length - 1 ? '1px solid var(--border)' : 'none' }}>
-              {/* Clickable header row */}
-              <div
-                onClick={() => setExpandedTc(isOpen ? null : i)}
-                style={{
-                  padding: '0.875rem 1.25rem',
-                  display: 'flex', alignItems: 'center', gap: '0.875rem',
-                  cursor: 'pointer',
-                  background: tcPassed ? 'rgba(34,197,94,0.03)' : 'rgba(239,68,68,0.03)',
-                  userSelect: 'none',
-                  transition: 'background 0.15s',
-                }}
-              >
-                <div style={{
-                  width: 24, height: 24, borderRadius: '50%', flexShrink: 0,
-                  background: tcPassed ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
-                  border: `1px solid ${tcPassed ? 'rgba(34,197,94,0.4)' : 'rgba(239,68,68,0.4)'}`,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  color: tcPassed ? 'var(--green)' : 'var(--red)',
-                }}>
-                  {tcPassed ? <Check size={14} strokeWidth={3} /> : <X size={14} strokeWidth={3} />}
-                </div>
-                <div style={{ flex: 1, fontWeight: 600, fontSize: '0.875rem', color: tcPassed ? 'var(--green)' : 'var(--red)' }}>
-                  Test Case {tc?.index ?? i + 1}
-                </div>
-                <div style={{ color: 'var(--text-3)', transition: 'transform 0.2s', transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>
-                  <ChevronDown size={16} />
-                </div>
-              </div>
 
-              {/* Expandable detail panel */}
-              {isOpen && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.2 }}
-                  style={{
-                    padding: '0.875rem 1.25rem 1.25rem 1.25rem',
-                    background: 'rgba(0,0,0,0.15)',
-                    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem',
-                  }}
-                >
-                  {/* Input */}
-                  <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: '0.75rem', border: '1px solid var(--border)' }}>
-                    <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: '0.4rem' }}>Input</div>
-                    <pre style={{ margin: 0, fontFamily: 'JetBrains Mono, monospace', fontSize: '0.8rem', color: 'var(--text-1)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                      {tc?.input || '<none>'}
-                    </pre>
-                  </div>
-                  {/* Expected */}
-                  <div style={{ background: 'rgba(34,197,94,0.05)', borderRadius: 8, padding: '0.75rem', border: '1px solid rgba(34,197,94,0.2)' }}>
-                    <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--green)', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: '0.4rem' }}>Expected</div>
-                    <pre style={{ margin: 0, fontFamily: 'JetBrains Mono, monospace', fontSize: '0.8rem', color: 'var(--green)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                      {tc?.expectedOutput || '<none>'}
-                    </pre>
-                  </div>
-                  {/* Actual */}
-                  <div style={{ background: tcPassed ? 'rgba(34,197,94,0.05)' : 'rgba(239,68,68,0.05)', borderRadius: 8, padding: '0.75rem', border: `1px solid ${tcPassed ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}` }}>
-                    <div style={{ fontSize: '0.65rem', fontWeight: 700, color: tcPassed ? 'var(--green)' : 'var(--red)', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: '0.4rem' }}>Your Output</div>
-                    <pre style={{ margin: 0, fontFamily: 'JetBrains Mono, monospace', fontSize: '0.8rem', color: tcPassed ? 'var(--green)' : 'var(--red)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                      {tc?.actualOutput || '<empty>'}
-                    </pre>
-                  </div>
-                </motion.div>
-              )}
-            </div>
-          );
-        })}
+        {/* Pass rate progress bar */}
+        <div style={{ marginTop: '1rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-3)', marginBottom: '0.35rem' }}>
+            <span>Pass Rate</span>
+            <span style={{ fontWeight: 700, color: passRate === 100 ? 'var(--green)' : passRate >= 60 ? 'var(--yellow)' : 'var(--red)' }}>{passRate}%</span>
+          </div>
+          <div className="progress-bar" style={{ height: 8 }}>
+            <div
+              className="progress-fill"
+              style={{
+                width: `${passRate}%`,
+                background: passRate === 100 ? 'var(--green)' : passRate >= 60 ? 'var(--yellow)' : 'var(--red)',
+                borderRadius: 99,
+              }}
+            />
+          </div>
+        </div>
       </motion.div>
 
       {/* AI Feedback */}
@@ -321,11 +392,11 @@ function ResultsInner() {
           <div style={{ padding: '1.25rem' }}>
             <div className="grid-2" style={{ marginBottom: '1.25rem' }}>
               {[
-                { 
-                  label: 'CODE QUALITY', 
-                  value: aiFeedback.codeQuality || 'N/A', 
+                {
+                  label: 'CODE QUALITY',
+                  value: aiFeedback.codeQuality || 'N/A',
                   mono: false,
-                  explanation: (function() {
+                  explanation: (function () {
                     const q = (aiFeedback.codeQuality || '').toLowerCase();
                     if (q.includes('perfect') || q.includes('excellent')) return 'Exceptional work! Your code is elegantly structured and follows professional industry standards.';
                     if (q.includes('good') || q.includes('great')) return 'Solid effort. Your logic is sound and the code is readable, though minor cleanups could be applied.';
@@ -334,11 +405,11 @@ function ResultsInner() {
                     return 'This metric evaluates your code style, naming conventions, and structural clarity.';
                   })()
                 },
-                { 
-                  label: 'TIME COMPLEXITY', 
-                  value: aiFeedback.timeComplexity || 'N/A', 
+                {
+                  label: 'TIME COMPLEXITY',
+                  value: aiFeedback.timeComplexity || 'N/A',
                   mono: true,
-                  explanation: (function() {
+                  explanation: (function () {
                     const clean = (aiFeedback.timeComplexity || '').toLowerCase().replace(/\s+/g, '');
                     if (clean.includes('o(1)')) return 'O(1) Constant Time: Highly optimal. The execution time remains the same regardless of input size.';
                     if (clean.includes('o(logn)')) return 'O(log n) Logarithmic Time: Execution time grows slowly. Typical of divide-and-conquer algorithms.';
@@ -352,43 +423,43 @@ function ResultsInner() {
               ].map(s => {
                 const isExpanded = expandedAiBox === s.label;
                 return (
-                <motion.div 
-                  key={s.label} 
-                  layout
-                  onClick={() => setExpandedAiBox(isExpanded ? null : s.label)}
-                  style={{ 
-                    background: isExpanded ? 'rgba(139,92,246,0.1)' : 'rgba(0,0,0,0.1)', 
-                    borderRadius: 10, padding: '0.875rem', 
-                    border: `1px solid ${isExpanded ? 'rgba(139,92,246,0.4)' : 'var(--border)'}`, 
-                    backdropFilter: 'blur(8px)', cursor: 'pointer', transition: 'all 0.2s' 
-                  }}
-                  onMouseEnter={(e) => { if (!isExpanded) e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }}
-                  onMouseLeave={(e) => { if (!isExpanded) e.currentTarget.style.background = 'rgba(0,0,0,0.1)' }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <div>
-                      <div style={{ fontSize: '0.68rem', color: isExpanded ? 'var(--accent)' : 'var(--text-3)', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '0.375rem', transition: 'color 0.2s' }}>{s.label}</div>
-                      <div style={{ fontWeight: s.mono ? 800 : 600, color: s.mono ? 'var(--accent)' : 'var(--text-1)', fontFamily: s.mono ? 'JetBrains Mono, monospace' : 'inherit', fontSize: s.mono ? '1rem' : '0.9rem' }}>{s.value}</div>
+                  <motion.div
+                    key={s.label}
+                    layout
+                    onClick={() => setExpandedAiBox(isExpanded ? null : s.label)}
+                    style={{
+                      background: isExpanded ? 'rgba(139,92,246,0.1)' : 'rgba(0,0,0,0.1)',
+                      borderRadius: 10, padding: '0.875rem',
+                      border: `1px solid ${isExpanded ? 'rgba(139,92,246,0.4)' : 'var(--border)'}`,
+                      backdropFilter: 'blur(8px)', cursor: 'pointer', transition: 'all 0.2s'
+                    }}
+                    onMouseEnter={(e) => { if (!isExpanded) e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }}
+                    onMouseLeave={(e) => { if (!isExpanded) e.currentTarget.style.background = 'rgba(0,0,0,0.1)' }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div>
+                        <div style={{ fontSize: '0.68rem', color: isExpanded ? 'var(--accent)' : 'var(--text-3)', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '0.375rem', transition: 'color 0.2s' }}>{s.label}</div>
+                        <div style={{ fontWeight: s.mono ? 800 : 600, color: s.mono ? 'var(--accent)' : 'var(--text-1)', fontFamily: s.mono ? 'JetBrains Mono, monospace' : 'inherit', fontSize: s.mono ? '1rem' : '0.9rem' }}>{s.value}</div>
+                      </div>
+                      <div style={{ color: isExpanded ? 'var(--accent)' : 'var(--text-3)', transition: 'transform 0.2s, color 0.2s', transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)', marginTop: '0.2rem' }}>
+                        <ChevronDown size={16} />
+                      </div>
                     </div>
-                    <div style={{ color: isExpanded ? 'var(--accent)' : 'var(--text-3)', transition: 'transform 0.2s, color 0.2s', transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)', marginTop: '0.2rem' }}>
-                      <ChevronDown size={16} />
-                    </div>
-                  </div>
-                  <AnimatePresence>
-                    {isExpanded && (
-                      <motion.div 
-                        initial={{ opacity: 0, height: 0, marginTop: 0 }} 
-                        animate={{ opacity: 1, height: 'auto', marginTop: 12 }} 
-                        exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                        style={{ overflow: 'hidden' }}
-                      >
-                        <div style={{ paddingTop: '0.75rem', borderTop: `1px solid ${isExpanded ? 'rgba(139,92,246,0.2)' : 'rgba(255,255,255,0.1)'}`, fontSize: '0.82rem', color: 'var(--text-2)', lineHeight: 1.5 }}>
-                          {s.explanation}
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </motion.div>
+                    <AnimatePresence>
+                      {isExpanded && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0, marginTop: 0 }}
+                          animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
+                          exit={{ opacity: 0, height: 0, marginTop: 0 }}
+                          style={{ overflow: 'hidden' }}
+                        >
+                          <div style={{ paddingTop: '0.75rem', borderTop: `1px solid ${isExpanded ? 'rgba(139,92,246,0.2)' : 'rgba(255,255,255,0.1)'}`, fontSize: '0.82rem', color: 'var(--text-2)', lineHeight: 1.5 }}>
+                            {s.explanation}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </motion.div>
                 );
               })}
             </div>

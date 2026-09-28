@@ -17,12 +17,19 @@ export class FacultyService {
     difficulty?: string;
     language?: string;
     year?: number;
+    limit?: number;
+    offset?: number;
   }) {
+    const take = Math.min(filters.limit ?? 100, 500); // default 100, max 500
+    const skip = filters.offset ?? 0;
+
     const q = this.submissionsRepo
       .createQueryBuilder('s')
       .leftJoinAndSelect('s.user', 'u')
       .where('s.status = :status', { status: 'completed' })
-      .orderBy('s.createdAt', 'DESC');
+      .orderBy('s.createdAt', 'DESC')
+      .take(take)
+      .skip(skip);
 
     if (filters.department)
       q.andWhere('u.department = :dept', { dept: filters.department });
@@ -45,6 +52,9 @@ export class FacultyService {
       passed: s.passed,
       testsPassed: s.testsPassed,
       testsTotal: s.testsTotal,
+      code: s.code,
+      originalityScore: s.gradeResult?.originalityScore ?? 100,
+      timeTakenSeconds: s.gradeResult?.timeTakenSeconds,
       submittedAt: s.createdAt,
     }));
   }

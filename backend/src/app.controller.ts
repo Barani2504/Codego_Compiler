@@ -1,4 +1,5 @@
 import { Controller, Get } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { AppService } from './app.service';
 import * as os from 'os';
 
@@ -28,6 +29,7 @@ export class AppController {
    *
    * Usage (demo script): GET /api/instance
    */
+  @SkipThrottle()
   @Get('api/instance')
   getInstance(): object {
     return {
@@ -44,6 +46,7 @@ export class AppController {
    *  - NGINX upstream max_fails to remove dead instances from rotation
    *  - PgBouncer / load balancer liveliness probes
    */
+  @SkipThrottle()
   @Get('health')
   health(): object {
     return {
