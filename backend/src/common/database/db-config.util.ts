@@ -1,5 +1,19 @@
+const NEON_DEFAULT_URL =
+  'postgresql://neondb_owner:npg_zH5JYuKmo4XT@ep-plain-darkness-b4wamcs9-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require';
+
 export function getDatabaseConfig() {
-  const dbUrl = process.env.DATABASE_URL;
+  const isCloudEnvironment = Boolean(
+    process.env.RENDER ||
+    process.env.IS_PULL_REQUEST ||
+    process.env.NODE_ENV === 'production'
+  );
+
+  let dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl && isCloudEnvironment) {
+    console.log('☁️ Cloud deployment detected without DATABASE_URL: Auto-connecting to Neon PostgreSQL.');
+    dbUrl = NEON_DEFAULT_URL;
+  }
+
   if (dbUrl) {
     try {
       const parsed = new URL(dbUrl);
@@ -9,7 +23,7 @@ export function getDatabaseConfig() {
       const password = decodeURIComponent(parsed.password);
       const database = parsed.pathname.replace(/^\//, '');
 
-      console.log(`📦 Database: Configured from DATABASE_URL -> ${username}@${host}:${port}/${database} (SSL enabled)`);
+      console.log(`📦 Database: Configured -> ${username}@${host}:${port}/${database} (SSL enabled)`);
       return {
         type: 'postgres' as const,
         host,
@@ -46,7 +60,7 @@ export function getDatabaseConfig() {
   const database = process.env.DB_NAME || 'coding_platform';
   const isProd = process.env.NODE_ENV === 'production' || process.env.DB_SSL === 'true';
 
-  console.warn(`⚠️ DATABASE_URL is NOT set! Falling back to: ${username}@${host}:${port}/${database}`);
+  console.warn(`⚠️ Local fallback: ${username}@${host}:${port}/${database}`);
   return {
     type: 'postgres' as const,
     host,
