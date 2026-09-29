@@ -63,12 +63,30 @@ export class ExecutionService {
     if (process.env.JUDGE0_URL) {
       return process.env.JUDGE0_URL;
     }
+    // If a RapidAPI key is set, use the RapidAPI Judge0 CE Extra endpoint
+    if (process.env.JUDGE0_API_KEY) {
+      return 'https://judge0-ce.p.rapidapi.com';
+    }
     const isCloud = Boolean(
       process.env.RENDER ||
       process.env.IS_PULL_REQUEST ||
       process.env.NODE_ENV === 'production'
     );
     return isCloud ? 'https://ce.judge0.com' : 'http://localhost:2358';
+  }
+
+  /**
+   * Build auth headers for Judge0.
+   * - If JUDGE0_API_KEY is set → RapidAPI headers (works with judge0-ce.p.rapidapi.com)
+   * - Otherwise → no extra headers (works for self-hosted / ce.judge0.com with open access)
+   */
+  private get judge0Headers(): Record<string, string> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (process.env.JUDGE0_API_KEY) {
+      headers['X-RapidAPI-Key']  = process.env.JUDGE0_API_KEY;
+      headers['X-RapidAPI-Host'] = 'judge0-ce.p.rapidapi.com';
+    }
+    return headers;
   }
 
   /** Encode a string to base64 for Judge0 submission */
@@ -283,7 +301,7 @@ export class ExecutionService {
           enable_per_process_and_thread_memory_limit: true,
         },
         {
-          headers: { 'Content-Type': 'application/json' },
+          headers: this.judge0Headers,
           timeout: 30000, // 30s axios timeout — covers slow compiles
         },
       );
