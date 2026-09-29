@@ -60,7 +60,15 @@ export class ExecutionService {
   private readonly logger = new Logger(ExecutionService.name);
 
   private get judge0Base(): string {
-    return process.env.JUDGE0_URL || 'http://localhost:2358';
+    if (process.env.JUDGE0_URL) {
+      return process.env.JUDGE0_URL;
+    }
+    const isCloud = Boolean(
+      process.env.RENDER ||
+      process.env.IS_PULL_REQUEST ||
+      process.env.NODE_ENV === 'production'
+    );
+    return isCloud ? 'https://ce.judge0.com' : 'http://localhost:2358';
   }
 
   /** Encode a string to base64 for Judge0 submission */
