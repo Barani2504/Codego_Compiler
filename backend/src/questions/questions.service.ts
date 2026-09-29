@@ -146,22 +146,40 @@ export class QuestionsService {
     }
 
     // ── 2. Postgres DB fallback — pick a random existing question ─────────────
-    // This covers the case before seeding or when ChromaDB is down.
     try {
-      const existing = await this.questionsRepo
+      // Step A: exact language and difficulty (case-insensitive)
+      let existing = await this.questionsRepo
         .createQueryBuilder('q')
-        .where('q.language = :language', { language })
-        .andWhere('q.difficulty = :difficulty', { difficulty })
+        .where('LOWER(q.language) = LOWER(:language)', { language })
+        .andWhere('LOWER(q.difficulty) = LOWER(:difficulty)', { difficulty })
         .orderBy('RANDOM()')
         .limit(1)
         .getOne();
 
+      // Step B: if no match for that difficulty, fallback to any question in that language
+      if (!existing) {
+        existing = await this.questionsRepo
+          .createQueryBuilder('q')
+          .where('LOWER(q.language) = LOWER(:language)', { language })
+          .orderBy('RANDOM()')
+          .limit(1)
+          .getOne();
+      }
+
+      // Step C: fallback to any question in the database
+      if (!existing) {
+        existing = await this.questionsRepo
+          .createQueryBuilder('q')
+          .orderBy('RANDOM()')
+          .limit(1)
+          .getOne();
+      }
+
       if (existing) {
         this.logger.log(`[DB-FALLBACK] Served ${language}/${difficulty} from Postgres questions table.`);
-        // Clone into a new row so each student gets their own question ID
         const cloned = this.questionsRepo.create({
-          language: existing.language,
-          difficulty: existing.difficulty,
+          language: language.toLowerCase(),
+          difficulty: difficulty.toLowerCase(),
           problemStatement: existing.problemStatement,
           constraints: existing.constraints,
           sampleInput: existing.sampleInput,
@@ -173,14 +191,30 @@ export class QuestionsService {
         return this.questionsRepo.save(cloned);
       }
     } catch (dbErr: any) {
-      this.logger.error(`[DB-FALLBACK] Postgres fallback also failed: ${dbErr.message}`);
+      this.logger.error(`[DB-FALLBACK] Postgres fallback query failed: ${dbErr.message}`);
     }
 
-    // ── 3. No questions available at all ─────────────────────────────────────
-    throw new NotFoundException(
-      `No questions available for ${language}/${difficulty}. ` +
-      `Please run: node scripts/seed-chroma.js`,
-    );
+    // ── 3. Built-in instant fallback (guarantees student never gets a 404) ──────
+    this.logger.warn(`[FALLBACK] Creating built-in starter question for ${language}/${difficulty}`);
+    const starterQuestion = this.questionsRepo.create({
+      language: language.toLowerCase(),
+      difficulty: difficulty.toLowerCase(),
+      problemStatement: `Write a program in ${language} that reads a list of space-separated integers from standard input, calculates their sum, and prints the result.`,
+      constraints: '1 <= N <= 10^5, -10^9 <= elements <= 10^9',
+      sampleInput: '1 2 3 4 5',
+      sampleOutput: '15',
+      testCases: [
+        { input: '1 2 3 4 5', expectedOutput: '15' },
+        { input: '10 -2 5', expectedOutput: '13' },
+        { input: '0', expectedOutput: '0' },
+      ],
+      hints: [
+        'Read the line from standard input',
+        'Split by spaces, parse to integers, and sum them up',
+      ],
+      timeLimitMinutes: difficulty.toLowerCase() === 'easy' ? 20 : difficulty.toLowerCase() === 'medium' ? 35 : 45,
+    });
+    return this.questionsRepo.save(starterQuestion);
   }
 
   /**
