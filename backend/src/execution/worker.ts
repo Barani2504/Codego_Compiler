@@ -11,40 +11,16 @@ import { Question } from '../questions/question.entity';
 import { Submission } from '../submissions/submission.entity';
 
 import { getRedisConfig } from '../common/redis/redis-config.util';
+import { getDatabaseConfig } from '../common/database/db-config.util';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     TypeOrmModule.forRoot({
-      type: 'postgres',
-      ...(process.env.DATABASE_URL
-        ? {
-            url: process.env.DATABASE_URL,
-            ssl: { rejectUnauthorized: false },
-          }
-        : {
-            host: process.env.DB_HOST || 'localhost',
-            port: parseInt(process.env.DB_PORT || '5432', 10),
-            username: process.env.DB_USER || 'platform_user',
-            password: process.env.DB_PASS || 'yourpassword',
-            database: process.env.DB_NAME || 'coding_platform',
-            ssl:
-              process.env.NODE_ENV === 'production' || process.env.DB_SSL === 'true'
-                ? { rejectUnauthorized: false }
-                : false,
-          }),
+      ...getDatabaseConfig(),
       entities: [User, Question, Submission],
       synchronize: process.env.NODE_ENV !== 'production' || process.env.DB_SYNC === 'true',
       poolSize: 5,
-      extra: {
-        idleTimeoutMillis: 10000,
-        connectionTimeoutMillis: 10000,
-        ...(process.env.DATABASE_URL ||
-        process.env.NODE_ENV === 'production' ||
-        process.env.DB_SSL === 'true'
-          ? { ssl: { rejectUnauthorized: false } }
-          : {}),
-      },
     }),
     BullModule.forRootAsync({
       useFactory: () => {
