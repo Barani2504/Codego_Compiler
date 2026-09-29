@@ -157,69 +157,77 @@ export class SubmissionsService implements OnModuleInit, OnModuleDestroy {
     return this.submissionsRepo.findOne({ where: { id }, relations: ['question'] });
   }
 
-  // ── "Run Code" — queued via Bull (test-before-submit) ────────────────────
-  // Previously this was synchronous with pLimit(3), which bypassed all
-  // backpressure. Now it pushes a high-priority job to the 'run-code' queue
-  // and waits for the result via Redis Pub/Sub (30s timeout).
+  // ── "Run Code" — direct execution via ExecutionService (test-before-submit) ──
   async runCode(
     code: string,
     language: string,
     testCases: { input: string; expectedOutput: any }[],
   ) {
-    const jobId = randomUUID();
-    const channel = `run:result:${jobId}`;
-
-    // Set up a promise that resolves when the worker publishes results
-    const resultPromise = new Promise<any[]>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.runCodeSubscriber.unsubscribe(channel).catch(() => {});
-        reject(new Error('Code execution timed out. Please try again.'));
-      }, RUN_CODE_TIMEOUT_MS);
-
-      this.runCodeSubscriber.subscribe(channel, (err) => {
-        if (err) {
-          clearTimeout(timeout);
-          reject(new Error(`Failed to subscribe for run-code results: ${err.message}`));
-        }
-      });
-
-      const messageHandler = (_ch: string, raw: string) => {
-        if (_ch !== channel) return;
-        clearTimeout(timeout);
-        this.runCodeSubscriber.removeListener('message', messageHandler);
-        this.runCodeSubscriber.unsubscribe(channel).catch(() => {});
+    const results = await Promise.all(
+      testCases.map(async (tc: { input: string; expectedOutput: any }) => {
+        const expectedRaw = Array.isArray(tc.expectedOutput)
+          ? tc.expectedOutput.join('\n')
+          : String(tc.expectedOutput ?? '');
 
         try {
-          const payload = JSON.parse(raw);
-          if (payload.status === 'error') {
-            reject(new Error(payload.error || 'Execution failed'));
-          } else {
-            resolve(payload.results);
+          const result = await this.executionService.runSingle(code, language, tc.input);
+          const expected = expectedRaw.trim();
+          const actual = (result.output || '').trim();
+
+          if (result.exitCode !== 0 || result.statusId === 6) {
+            return {
+              input: tc.input,
+              passed: false,
+              output: result.stderr || result.output || result.statusDesc,
+              expected,
+              exitCode: result.exitCode,
+              statusId: result.statusId,
+              statusDesc: result.statusDesc,
+              isError: true,
+            };
           }
-        } catch (parseErr: any) {
-          reject(new Error(`Failed to parse run-code result: ${parseErr.message}`));
+
+          // JSON-aware comparison for JS function results
+          let passed = false;
+          try {
+            const actualParsed = JSON.parse(actual);
+            const expectedParsed = JSON.parse(expected);
+            passed = JSON.stringify(actualParsed) === JSON.stringify(expectedParsed);
+          } catch {
+            const actualTokens = actual.split(/\s+/).filter((t) => t.length > 0);
+            const expectedTokens = expected.split(/\s+/).filter((t) => t.length > 0);
+            passed =
+              actualTokens.length === expectedTokens.length &&
+              actualTokens.every((t, i) => t === expectedTokens[i]);
+          }
+
+          return {
+            input: tc.input,
+            passed,
+            output: actual,
+            expected,
+            exitCode: 0,
+            statusId: result.statusId,
+            statusDesc: result.statusDesc,
+            stderr: result.stderr,
+            isError: false,
+          };
+        } catch (err: any) {
+          return {
+            input: tc.input,
+            passed: false,
+            output: err.message || 'Execution error',
+            expected: expectedRaw?.trim() ?? '',
+            exitCode: 1,
+            statusId: 13,
+            statusDesc: 'Internal Error',
+            isError: true,
+          };
         }
-      };
-
-      this.runCodeSubscriber.on('message', messageHandler);
-    });
-
-    // Enqueue the run-code job with high priority
-    await this.runCodeQueue.add(
-      'run',
-      { jobId, code, language, testCases },
-      {
-        priority:         1,        // Higher priority than graded submissions
-        attempts:         2,
-        backoff:          { type: 'fixed', delay: 1000 },
-        removeOnComplete: 50,
-        removeOnFail:     20,
-        timeout:          35000,    // Slightly longer than our client timeout
-      },
+      }),
     );
 
-    // Wait for the worker to publish results (or timeout)
-    return resultPromise;
+    return results;
   }
 
   /**
